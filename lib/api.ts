@@ -1,4 +1,5 @@
 // Server-side data access for the page, through the Elysia API (lib/server.ts).
+import { cookies } from "next/headers";
 import { api } from "./server";
 // The page never talks to the database directly.
 
@@ -48,12 +49,24 @@ export type PeriodRow = {
   clearancePct: number | null;
 };
 
-// Calls the Elysia API in-process (same app, no network hop).
+// Calls the Elysia API in-process (same app, no network hop), passing on the visitor's
+// session cookie so the API's auth guard applies to the page too.
+async function call(path: string) {
+  const cookie = (await cookies()).toString();
+  return api.handle(new Request(`http://internal${path}`, { headers: { cookie } }));
+}
+
 async function get<T>(path: string): Promise<T | null> {
-  const res = await api.handle(new Request(`http://internal${path}`));
+  const res = await call(path);
   if (res.status === 404) return null;
   if (!res.ok) throw new Error(`API ${path} returned ${res.status}`);
   return res.json() as Promise<T>;
+}
+
+/** The signed-in user, or null when the visitor has no valid session. */
+export async function getMe(): Promise<{ username: string } | null> {
+  const res = await call("/api/auth/me");
+  return res.ok ? res.json() : null;
 }
 
 export const getLatestMetrics = () => get<LatestMetrics>("/api/metrics/latest");

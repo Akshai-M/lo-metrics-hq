@@ -1,5 +1,6 @@
 import { Suspense } from "react";
 import { connection } from "next/server";
+import { redirect } from "next/navigation";
 import { AlertTriangle, BadgeCheck, CalendarDays, RefreshCw, Users } from "lucide-react";
 import { AppSidebar } from "@/components/app-sidebar";
 import { TABS, type Tab } from "@/lib/tabs";
@@ -13,12 +14,12 @@ import { Separator } from "@/components/ui/separator";
 import { SidebarInset, SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { COMPETENCIES, getLatestMetrics, getPeriods, getSplits, type PeriodRow } from "@/lib/api";
+import { COMPETENCIES, getLatestMetrics, getMe, getPeriods, getSplits, type PeriodRow } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
 type Grain = "month" | "week";
 type SP = { [key: string]: string | string[] | undefined };
-type State = { tab: Tab; grain: Grain; scope: string };
+type State = { tab: Tab; grain: Grain; scope: string; user: string };
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
@@ -85,7 +86,7 @@ function Shell({ state, runId, children }: { state: State; runId?: string; child
   const hrefs = Object.fromEntries(TABS.map((t) => [t.key, href({ ...state, tab: t.key })])) as Record<Tab, string>;
   return (
     <SidebarProvider>
-      <AppSidebar active={state.tab} hrefs={hrefs} />
+      <AppSidebar active={state.tab} hrefs={hrefs} user={state.user} />
       <SidebarInset>
         <header className="sticky top-0 z-20 flex h-16 shrink-0 items-center gap-3 border-b bg-background/85 px-4 backdrop-blur md:px-6">
           <SidebarTrigger className="-ml-1" />
@@ -137,12 +138,14 @@ function Hero({ state, runAt, controls }: { state: State; runAt?: string; contro
 
 async function Dashboard({ searchParams }: { searchParams: Promise<SP> }) {
   await connection(); // always read the latest run at request time
+  const me = await getMe();
+  if (!me) redirect("/login");
   const sp = await searchParams;
   const tab: Tab = TABS.some((t) => t.key === sp.tab) ? (sp.tab as Tab) : "overview";
   const grain: Grain = sp.grain === "week" ? "week" : "month";
   const scopeParam = typeof sp.scope === "string" ? sp.scope : "ALL";
   const scope = scopeParam in COMPETENCIES ? scopeParam : "ALL";
-  const state: State = { tab, grain, scope };
+  const state: State = { tab, grain, scope, user: me.username };
 
   const [latest, periods, splits] = await Promise.all([
     getLatestMetrics(),
