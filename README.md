@@ -18,7 +18,7 @@ lib/api.ts                    page -> Elysia (in-process)
 lib/metrics/config.ts         rules: competencies, section names, cutoffs, date windows, tab rule
 lib/metrics/competency.ts     metric logic
 lib/metrics/appsScript.ts     Apps Script client
-lib/metrics/store.ts          Postgres (Bun.SQL)
+lib/metrics/store.ts          Postgres (postgres.js; runs on Node and Bun)
 lib/metrics/pipeline.ts       one run: fetch -> evaluate -> aggregate -> save
 lib/metrics/cli.ts            `bun run refresh`
 ```
@@ -28,8 +28,18 @@ lib/metrics/cli.ts            `bun run refresh`
 ```
 APPS_SCRIPT_ENDPOINT=https://script.google.com/macros/s/.../exec
 DATABASE_URL=postgresql://...
-REFRESH_TOKEN=            # optional: required header x-refresh-token on POST /api/refresh
+ADMIN_USERNAME=admin
+ADMIN_PASSWORD=           # long random password
+REFRESH_TOKEN=            # optional: lets scripts call POST /api/refresh with header x-refresh-token
 ```
+
+## Sign-in
+
+One admin account, set in `.env` (`ADMIN_USERNAME`, `ADMIN_PASSWORD`). The dashboard and every
+`/api` route except `/api/health` need it. The session is a signed, HttpOnly cookie that lasts
+7 days; changing `ADMIN_PASSWORD` signs everyone out. If either variable is missing, nobody can
+sign in. Scripts can still call `POST /api/refresh` with header `x-refresh-token` when
+`REFRESH_TOKEN` is set.
 
 ## YOG file
 
@@ -41,6 +51,7 @@ YOG-wise split. To update it, replace the file with a new export and run `bun ru
 ```
 bun install
 bun run dev                        # app + API (Next.js on the Bun runtime)
+bun run build && bun run start     # production build, served on Node (same as Vercel)
 bun run refresh                    # recompute metrics from cached sheets and save a run
 bun run refresh --refresh          # re-fetch every sheet first
 bun run refresh --refresh-errors   # re-fetch only sheets that failed
