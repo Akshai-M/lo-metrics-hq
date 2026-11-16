@@ -39,3 +39,7 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# metrics run data (cached sheets, audit files)
+/data/
+/output/
