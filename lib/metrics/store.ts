@@ -1,5 +1,5 @@
 /**
- * Postgres persistence (DATABASE_URL) via Bun's built-in SQL client.
+ * Postgres persistence (DATABASE_URL) via postgres.js.
  *
  * Tables (ft_comp_ = FT competency phase), one set of rows per run_id:
  *   ft_comp_runs      headline metrics, summary, report (jsonb)
@@ -8,14 +8,16 @@
  *   ft_comp_periods   weekly / monthly attempted, cleared, clearance %
  *   ft_comp_students  one row per student with per-competency detail (jsonb)
  */
-import type { SQL } from "bun";
+import postgres from "postgres";
 import type { Attempt, Metrics, PeriodRow, StudentRow } from "./competency";
 
-let client: SQL | null = null;
-export function db(): SQL {
+// postgres.js: works on Node (Vercel) and Bun. Serverless gets a single connection per instance.
+type Sql = postgres.Sql;
+let client: Sql | null = null;
+export function db(): Sql {
   if (!client) {
     if (!process.env.DATABASE_URL) throw new Error("DATABASE_URL is not set in .env");
-    client = new Bun.SQL(process.env.DATABASE_URL); // Bun built-in Postgres client (run Next with bun --bun)
+    client = postgres(process.env.DATABASE_URL, { max: process.env.VERCEL ? 1 : 10, onnotice: () => {} });
   }
   return client;
 }
@@ -78,7 +80,7 @@ export type EventRow = {
   error: string | null;
 };
 
-async function insertChunked(sql: SQL, table: string, rows: Record<string, unknown>[], size = 1000) {
+async function insertChunked(sql: Sql | postgres.TransactionSql, table: string, rows: Record<string, unknown>[], size = 1000) {
   for (let i = 0; i < rows.length; i += size) {
     await sql`INSERT INTO ${sql(table)} ${sql(rows.slice(i, i + size))}`;
   }
