@@ -230,7 +230,7 @@ export function YogCohortSplits({ groups, modes, index = "03" }: { groups: YogGr
             <SelectTrigger className="min-w-48 bg-card">
               <SelectValue />
             </SelectTrigger>
-            <SelectContent>
+            <SelectContent alignItemWithTrigger={false} align="start" className="w-auto min-w-(--anchor-width) max-w-[calc(100vw-2rem)]">
               {items.map((it) => (
                 <SelectItem key={it.value} value={it.value}>
                   {it.label}

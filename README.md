@@ -20,6 +20,10 @@ lib/metrics/competency.ts     metric logic
 lib/metrics/appsScript.ts     Apps Script client
 lib/metrics/filters.ts        global filters (URL params -> filtered rows, attempt numbers)
 lib/metrics/overview.ts       overview numbers for the filtered rows
+lib/metrics/reattempts.ts     reattempts & duration views, failure reasons
+lib/metrics/students.ts       student-wise table
+lib/metrics/placements.ts     placement file loader (data/placements.csv)
+lib/metrics/outcomes.ts       assessed pool -> placed, TR -> cleared, verdict bands
 lib/metrics/tr.ts             TR interviews (post-offline sheet, action=postOfflineData)
 lib/metrics/store.ts          Postgres (postgres.js; runs on Node and Bun)
 lib/metrics/pipeline.ts       one run: fetch -> evaluate -> aggregate -> save
@@ -81,6 +85,26 @@ in the last 30 days up to the latest date in the data (`ACTIVE_DAYS` in `config.
 `data/user_yog.csv` (columns `user_id,YOG`) gives each student's year of graduation for the
 YOG-wise split. To update it, replace the file with a new export and run `bun run refresh`.
 
+## Placement file
+
+`data/placements.csv` is the "Academy All Placed" export (one row per placement record). Columns are
+read by header name: `user id`, `Date of Entry`, `Placement Status`, `Latest Placement Status`,
+`Placed Through`, `Placement Type`, `Company Type`; everything else (names, links, companies,
+remarks) is ignored and never stored. To update, replace the file and run `bun run refresh`.
+
+**Placement & TR** tab (`lib/metrics/outcomes.ts`):
+
+- **Assessed pool** = students who cleared `POOL_ENTRY_STAGE` (offline) in the selection; pool entry =
+  first clearance date.
+- **Pool -> Placed %** = pool students with a placement dated on or after pool entry / pool. Placements
+  before the assessment are not counted ("any time" is shown alongside).
+- **Not cleared -> Placed %**: took offline, never cleared, placed on or after the first attempt.
+- **Median days to placement**: pool entry -> first placement after it.
+- **Placement mix**: every student placed since the first offline exam, by assessment status (all
+  assessment data, not the filters).
+- **TR -> Cleared %** (per `TR_COUNT`) and **verdict bands** (Verdict Band column of the TR sheet,
+  share of completed interviews).
+
 ## Commands
 
 ```
@@ -102,6 +126,10 @@ bun run refresh --no-db            # compute + write output/ only
 | GET | `/api/overview?grain=&<filters>` | headline, trend and per-competency numbers for the filters |
 | GET | `/api/periods?grain=month\|week&scope=ALL\|C1..C7` | weekly / monthly matrix (online + offline) |
 | GET | `/api/splits?grain=&<filters>` | period, overall and YOG splits for the filters |
+| GET | `/api/reattempts?rcomp=&<filters>` | attempts to clear, days to clear, days between attempts |
+| GET | `/api/failures?<filters>` | failed gated sections per competency and mode |
+| GET | `/api/students?<filters>` | one row per student |
+| GET | `/api/outcomes?<filters>` | pool -> placed, placement mix, TR -> cleared, verdict bands |
 | GET | `/api/runs` | run history |
 | POST | `/api/refresh` | starts a run in the background (202) |
 | GET | `/api/refresh/status` | current / last run state |
@@ -141,6 +169,21 @@ Definitions (dashboard):
 - **Mean / median re-attempts to clear**: per student x competency (TR separately) that cleared,
   attempts before the first qualifying one. **Attempts so far** adds never-cleared pairs, counted as
   attempts so far - 1.
+
+**Reattempts & duration** tab (unit: student x competency, TR interviews as their own sequence,
+same attempt numbers as Reattempt %): the attempt that first cleared (1, 2, 3, 4+, not cleared yet);
+days from the first attempt in the selection to the first qualifying one (cleared pairs only); and
+the median gap between consecutive attempts per pair, then the median across pairs with 2+ attempts.
+Durations are truncated by the short data window.
+
+**Why attempts fail** (competency tab): not-cleared, evaluable assessment attempts, one row per gated
+section below its cutoff (`failed_sections`, already canonical keys joined with `;`; labels in
+`SECTION_LABELS`). `__OVERALL__` = overall score below cutoff (C1 online). Bars = share of the mode's
+not-cleared attempts; an attempt can fail several sections.
+
+**Students** tab: one row per student for the filters, built from the filtered attempts
+(`ft_comp_students` is a whole-run summary that can't follow the filters). Candidate IDs only.
+Cleared competencies use `CLEARANCE_STAGE`. Search, sort, 50 per page, CSV of the searched rows.
 
 The stored run headline (`ft_comp_runs`, `bun run refresh` output) still uses the pipeline's
 original rule (unevaluable attempts in the denominator, online + offline); the dashboard reproduces

@@ -6,6 +6,10 @@
  *   GET  /api/periods?grain=&scope=     weekly / monthly matrix (grain: month|week, scope: ALL|C1..C7)
  *   GET  /api/overview?grain=&<filters>  headline, trend and per-competency numbers for the global filters
  *   GET  /api/splits?grain=&<filters>    period split (month | week), overall split, YOG split, TR levels
+ *   GET  /api/reattempts?rcomp=&<filters> attempts-to-clear and duration views (rcomp: one competency, default all selected)
+ *   GET  /api/failures?<filters>        failed gated sections per competency and mode
+ *   GET  /api/students?<filters>        one row per student
+ *   GET  /api/outcomes?<filters>        assessed pool -> placed, placement mix, TR -> cleared, verdict bands
  *        <filters>: comps, yogs, modes, online, from, to, attempt, unev, active (see lib/metrics/filters.ts)
  *   GET  /api/runs                      run history
  *   POST /api/refresh                   start a metrics run in the background ({ refresh?, refreshErrors? })
@@ -22,7 +26,11 @@ import { runPipeline } from "./metrics/pipeline";
 import { competencyBreakdown, eventIssues, eventStatus, latestRun, periods, runHistory } from "./metrics/store";
 import { overallSplit, periodSplit, trLevelSplit, yogSplit } from "./metrics/splits";
 import { overview, stages } from "./metrics/overview";
-import { applyFilters, loadRows } from "./metrics/filters";
+import { applyFilters, loadRows, pick } from "./metrics/filters";
+import { failureReasons, reattemptViews } from "./metrics/reattempts";
+import { studentRows } from "./metrics/students";
+import { placementViews, trViews } from "./metrics/outcomes";
+import { runPlacements } from "./metrics/store";
 import { COMPETENCIES, TR_COUNT } from "./metrics/config";
 import {
   SESSION_COOKIE,
@@ -79,6 +87,8 @@ const filterQuery = t.Object({
   attempt: t.Optional(t.String()),
   unev: t.Optional(t.String()),
   active: t.Optional(t.String()),
+  rcomp: t.Optional(t.String()),
+  pcomps: t.Optional(t.String()), // period chart: competencies to combine (default all selected)
 });
 
 const PUBLIC = new Set(["/api/health", "/api/auth/login"]);
@@ -182,9 +192,55 @@ export const api = new Elysia({ prefix: "/api" })
         runId: run.runId,
         trCount: TR_COUNT,
         modes,
-        period: periodSplit(attempts, query.grain ?? "month", comps, modes),
+        period: periodSplit(attempts, query.grain ?? "month", comps, modes, pick(query.pcomps, comps)),
         overall: { ...overallSplit(attempts, comps, modes), trLevels: modes.includes("TR") ? trLevelSplit(tr, comps) : [] },
         yog: yogSplit(attempts, comps, modes),
+      };
+    },
+    { query: filterQuery }
+  )
+  .get(
+    "/reattempts",
+    async ({ query, status }) => {
+      const run = await latestRun();
+      if (!run) return status(404, { error: "No metrics run yet." });
+      const { filters, rows } = applyFilters(await loadRows(run.runId), query);
+      const comp = query.rcomp && filters.comps.includes(query.rcomp) ? query.rcomp : null;
+      return { runId: run.runId, ...reattemptViews(rows, comp) };
+    },
+    { query: filterQuery }
+  )
+  .get(
+    "/failures",
+    async ({ query, status }) => {
+      const run = await latestRun();
+      if (!run) return status(404, { error: "No metrics run yet." });
+      const { filters, rows } = applyFilters(await loadRows(run.runId), query);
+      return { runId: run.runId, competencies: failureReasons(rows, filters.comps, filters.modes) };
+    },
+    { query: filterQuery }
+  )
+  .get(
+    "/students",
+    async ({ query, status }) => {
+      const run = await latestRun();
+      if (!run) return status(404, { error: "No metrics run yet." });
+      const { rows, isActive } = applyFilters(await loadRows(run.runId), query);
+      return { runId: run.runId, students: studentRows(rows, isActive) };
+    },
+    { query: filterQuery }
+  )
+  .get(
+    "/outcomes",
+    async ({ query, status }) => {
+      const run = await latestRun();
+      if (!run) return status(404, { error: "No metrics run yet." });
+      const [all, placements] = await Promise.all([loadRows(run.runId), runPlacements(run.runId)]);
+      const { filters, rows } = applyFilters(all, query);
+      return {
+        runId: run.runId,
+        placement: placementViews(rows, all, placements, filters.comps),
+        tr: trViews(rows, filters.comps),
       };
     },
     { query: filterQuery }

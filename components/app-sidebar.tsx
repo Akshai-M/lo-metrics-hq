@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { BarChart3, GraduationCap, Layers, LayoutDashboard, LogOut, Table2, UserRound, Activity } from "lucide-react";
+import { BarChart3, GraduationCap, Layers, LayoutDashboard, LogOut, Table2, UserRound, Activity, Briefcase, Timer, Users } from "lucide-react";
 import { useSignOut } from "@/components/auth-forms";
 import {
   Sidebar,
@@ -25,6 +25,9 @@ const ICONS: Record<Tab, typeof LayoutDashboard> = {
   splits: Table2,
   yog: GraduationCap,
   competency: BarChart3,
+  reattempts: Timer,
+  outcomes: Briefcase,
+  students: Users,
   health: Activity,
 };
 

@@ -40,7 +40,6 @@ export function StageFunnel({ funnel, poolEntry, online, index = "01" }: { funne
   const { stages } = funnel;
   const top = stages[0]?.count ?? 0;
   const pool = poolIndex(stages, poolEntry);
-  const hasOnline = stages.some((s) => s.mode === "Online");
 
   return (
     <Card className="gap-0 rounded-lg py-0">
@@ -53,12 +52,6 @@ export function StageFunnel({ funnel, poolEntry, online, index = "01" }: { funne
           {!online && " Online is off, so the funnel starts at Offline."} TR is not a gate; the placement pool opens after{" "}
           {STAGE_NAME[poolEntry]}.
         </CardDescription>
-        {hasOnline && (
-          <p className="mt-1 w-fit rounded bg-chip-amber px-2 py-1 text-xs text-offline-text">
-            Online attempts have known integrity issues, so they are excluded from headline metrics by default. Treat online figures as
-            indicative only.
-          </p>
-        )}
       </CardHeader>
       <CardContent className="py-5">
         {stages.length === 0 || top === 0 ? (
@@ -68,11 +61,11 @@ export function StageFunnel({ funnel, poolEntry, online, index = "01" }: { funne
             {stages.map((s, i) => (
               <li key={stageLabel(s)}>
                 {i > 0 && (
-                  <div className="ml-[148px] flex items-center gap-2 py-1 text-xs text-muted-foreground sm:ml-[188px]">
+                  <div className="flex items-center gap-2 py-1 text-xs text-muted-foreground sm:ml-[188px]">
                     <span>{conversionLabel(stages[i - 1], s)}</span>
                   </div>
                 )}
-                <div className="grid grid-cols-[140px_1fr] items-center gap-2 sm:grid-cols-[180px_1fr]">
+                <div className="grid grid-cols-1 items-center gap-1 sm:grid-cols-[180px_1fr] sm:gap-2">
                   <span className="text-sm">
                     <span className="font-medium">{stageLabel(s)}</span>
                     {s.mode === "TR" && s.step === "attempted" && (
@@ -90,7 +83,7 @@ export function StageFunnel({ funnel, poolEntry, online, index = "01" }: { funne
                   </div>
                 </div>
                 {i === pool && (
-                  <div className="ml-[148px] mt-1 border-t border-dashed border-primary/50 pt-1 text-xs font-medium text-primary sm:ml-[188px]">
+                  <div className="mt-1 border-t border-dashed border-primary/50 pt-1 text-xs font-medium text-primary sm:ml-[188px]">
                     Placement pool entry
                   </div>
                 )}

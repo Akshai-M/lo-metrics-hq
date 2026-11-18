@@ -1,21 +1,38 @@
 import { Suspense } from "react";
 import { connection } from "next/server";
 import { redirect } from "next/navigation";
-import { Activity, AlertTriangle, BadgeCheck, CalendarDays, Database, Repeat, RefreshCw, Users } from "lucide-react";
+import { Activity, AlertTriangle, BadgeCheck, Briefcase, CalendarDays, Database, Gavel, Repeat, RefreshCw, Timer, Users } from "lucide-react";
 import { AppSidebar } from "@/components/app-sidebar";
 import { TABS, type Tab } from "@/lib/tabs";
 import { ClearanceTrendChart, CompetencyClearanceChart, type Point } from "@/components/charts";
 import { StageFunnel } from "@/components/funnel";
-import { SegmentedNav } from "@/components/filters";
 import { GlobalFilters } from "@/components/global-filters";
 import { ModeBenchmark, OverallModeCard, YogCohortSplits } from "@/components/mode-split";
 import { PeriodSplitTable } from "@/components/split-tables";
+import { PeriodModeCharts } from "@/components/period-charts";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
 import { SidebarInset, SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
-import { Skeleton } from "@/components/ui/skeleton";
-import { COMPETENCIES, FILTER_KEYS, getLatestMetrics, getMe, getOverview, getSplits, type Overview } from "@/lib/api";
+import { Spinner } from "@/components/ui/spinner";
+import { BucketChart, FailureChart } from "@/components/detail-charts";
+import { StudentsTable } from "@/components/students-table";
+import { CountBars, PctBars, VerdictBars } from "@/components/outcome-charts";
+import { SegmentedNav, SelectNav } from "@/components/filters";
+import {
+  COMPETENCIES,
+  FILTER_KEYS,
+  getFailures,
+  getLatestMetrics,
+  getMe,
+  getOutcomes,
+  getOverview,
+  getReattempts,
+  getSplits,
+  getStudents,
+  type Overview,
+} from "@/lib/api";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { cn } from "@/lib/utils";
 
 type Grain = "month" | "week";
@@ -29,7 +46,10 @@ const DESCRIPTIONS: Record<Tab, string> = {
   overview: "Students attempting and clearing FT competency assessments. Every number follows the filter bar.",
   splits: "Attempted and qualified students by competency, mode and period.",
   yog: "Clearance by mode, overall and by year of graduation.",
-  competency: "Clearance and reattempts by competency and by assessment mode.",
+  competency: "Clearance and reattempts by competency and by assessment mode, and why attempts fail.",
+  reattempts: "How many attempts students need to clear, and how long it takes.",
+  outcomes: "From the assessed pool to placement, and how technical rounds turn out.",
+  students: "One row per student for the current filters. Search, sort and download.",
   health: "Where the numbers come from: the latest run, exam events read, and attempts that could not be evaluated.",
 };
 
@@ -168,10 +188,17 @@ async function Dashboard({ searchParams }: { searchParams: Promise<SP> }) {
   }
   const state: State = { tab, grain, filters: fq.toString(), user: me.username };
 
-  const [latest, ov, splits] = await Promise.all([
+  const pcomps = typeof sp.pcomps === "string" && /^[C0-9,]+$/.test(sp.pcomps) ? sp.pcomps : null;
+  const rcomp = typeof sp.rcomp === "string" && sp.rcomp in COMPETENCIES ? sp.rcomp : null;
+  const none = Promise.resolve(null);
+  const [latest, ov, splits, failures, reattempts, students, outcomes] = await Promise.all([
     getLatestMetrics(),
     getOverview(grain, state.filters), // also gives the filter bar its options
-    tab === "overview" ? Promise.resolve(null) : getSplits(grain, state.filters),
+    ["splits", "yog", "competency"].includes(tab) ? getSplits(grain, state.filters, tab === "splits" ? pcomps : null) : none,
+    tab === "competency" ? getFailures(state.filters) : none,
+    tab === "reattempts" ? getReattempts(rcomp, state.filters) : none,
+    tab === "students" ? getStudents(state.filters) : none,
+    tab === "outcomes" || tab === "overview" ? getOutcomes(state.filters) : none,
   ]);
 
   if (!latest || !ov) {
@@ -194,8 +221,18 @@ async function Dashboard({ searchParams }: { searchParams: Promise<SP> }) {
   if (tab === "splits") {
     return (
       <Shell state={state} runId={run.runId} bar={bar}>
-        <Hero state={state} runAt={run.runAt} />
-        {splits && <PeriodSplitTable split={splits.period} action={<SegmentedNav label="Grain" value={grain} options={grainOptions(state)} />} />}
+        <Hero state={state} runAt={run.runAt} controls={<SegmentedNav label="Grain" value={grain} options={grainOptions(state)} />} />
+        {splits && (
+          <>
+            <PeriodModeCharts
+              split={splits.period}
+              modes={splits.modes}
+              options={f.comps.map((c) => ({ value: c, label: `${c} ${COMPETENCIES[c]}`, short: c }))}
+              index="01"
+            />
+            <PeriodSplitTable split={splits.period} index="02" />
+          </>
+        )}
       </Shell>
     );
   }
@@ -255,6 +292,280 @@ async function Dashboard({ searchParams }: { searchParams: Promise<SP> }) {
           </CardContent>
         </Card>
         {splits && <OverallModeCard split={splits.overall} modes={splits.modes} index="02" trCount={splits.trCount} />}
+        <Card className="gap-0 rounded-lg py-0">
+          <CardHeader className="border-b py-5">
+            <div className="eyebrow">03 — Failure reasons</div>
+            <CardTitle className="font-serif text-2xl font-normal">Why attempts fail</CardTitle>
+            <CardDescription>
+              Not-cleared, evaluable attempts only, split into one row per gated section below its cutoff. Bars = share of the mode&apos;s not-cleared
+              attempts that failed the section; an attempt that failed two sections counts under both, so bars add up to more than 100%. TR has no
+              sections and is not shown.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="py-5">
+            {!failures?.competencies.length ? (
+              <p className="text-sm text-muted-foreground">No not-cleared assessment attempts for this selection.</p>
+            ) : (
+              <div className="grid gap-x-10 gap-y-8 xl:grid-cols-2">
+                {failures.competencies.map((c) => (
+                  <section key={c.competency} className="min-w-0">
+                    <h3 className="text-sm">
+                      <span className="font-mono text-xs text-muted-foreground">{c.competency}</span> <span className="font-medium">{COMPETENCIES[c.competency]}</span>
+                    </h3>
+                    <p className="mb-2 text-xs text-muted-foreground tabular-nums">
+                      Not-cleared attempts: {c.modes.map((m) => `${m.mode} ${m.failedAttempts.toLocaleString()}`).join(" · ")}
+                    </p>
+                    <FailureChart data={c} />
+                  </section>
+                ))}
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      </Shell>
+    );
+  }
+
+  if (tab === "reattempts") {
+    const fmtDay = (d: string | null) => (d ? new Date(`${d}T00:00:00Z`).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" }) : "n/a");
+    const base = href(state);
+    const compOptions = [
+      { value: "all", label: "All selected", href: base },
+      ...f.comps.map((c) => ({ value: c, label: `${c} ${COMPETENCIES[c]}`, href: `${base}${base.includes("?") ? "&" : "?"}rcomp=${c}` })),
+    ];
+    const ra = reattempts;
+    const scope = ra?.competency ? `${ra.competency} ${COMPETENCIES[ra.competency]}` : `All selected competencies (${f.comps.join(", ")})`;
+    return (
+      <Shell state={state} runId={run.runId} bar={bar}>
+        <Hero state={state} runAt={run.runAt} controls={<SelectNav label="Competency" value={ra?.competency ?? "all"} options={compOptions} />} />
+        {ra && (
+          <>
+            <p className="rounded-md border border-dashed bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
+              Data currently covers {fmtDay(ra.range.from)} to {fmtDay(ra.range.to)} for this selection, so long durations are truncated: students who
+              started late have had less time to reattempt or clear. Unit: student × competency, with TR interviews as their own sequence (same pairs and
+              attempt numbers as the Reattempt % card). {scope} · {f.modes.join(" + ")}.
+            </p>
+            <Card className="gap-0 overflow-hidden rounded-lg py-0">
+              <div className="grid grid-cols-1 gap-px bg-border sm:grid-cols-3">
+                <Kpi label="Student × competency pairs" value={ra.pairs.toLocaleString()} sub={`${ra.clearedPairs.toLocaleString()} cleared`} icon={Users} chip="green" />
+                <Kpi
+                  label="Median days between attempts"
+                  value={ra.daysBetween.median === null ? "n/a" : String(ra.daysBetween.median)}
+                  sub={`Median gap between consecutive attempts per pair, then the median across ${ra.daysBetween.pairs.toLocaleString()} pairs with 2+ attempts`}
+                  icon={Timer}
+                  chip="blue"
+                />
+                <Kpi
+                  label="Cleared on first attempt"
+                  value={fmtPct(ra.clearedPairs ? (100 * ra.attemptsToClear[0].count) / ra.clearedPairs : null)}
+                  sub={`${ra.attemptsToClear[0].count.toLocaleString()} of ${ra.clearedPairs.toLocaleString()} cleared pairs`}
+                  icon={BadgeCheck}
+                  chip="green"
+                />
+              </div>
+            </Card>
+            <div className="grid gap-6 xl:grid-cols-2">
+              <Card className="gap-4 rounded-lg">
+                <CardHeader>
+                  <div className="eyebrow">01 — Attempts to clear</div>
+                  <CardTitle className="font-serif text-2xl font-normal">Which attempt cleared it</CardTitle>
+                  <CardDescription>Pairs by the attempt number of their first qualifying attempt, plus pairs not cleared yet.</CardDescription>
+                </CardHeader>
+                <CardContent className="px-2 sm:px-4">
+                  <BucketChart
+                    data={ra.attemptsToClear.map((b) => ({ ...b, bucket: b.bucket === "Not cleared yet" ? b.bucket : `Attempt ${b.bucket}` }))}
+                    unit="pairs"
+                    muted={["Not cleared yet"]}
+                  />
+                </CardContent>
+              </Card>
+              <Card className="gap-4 rounded-lg">
+                <CardHeader>
+                  <div className="eyebrow">02 — Time to clear</div>
+                  <CardTitle className="font-serif text-2xl font-normal">Days from first attempt to clearance</CardTitle>
+                  <CardDescription>Cleared pairs only: date of the first qualifying attempt minus the date of the first attempt in the selection.</CardDescription>
+                </CardHeader>
+                <CardContent className="px-2 sm:px-4">
+                  <BucketChart data={ra.daysToClear} unit="pairs" />
+                </CardContent>
+              </Card>
+            </div>
+          </>
+        )}
+      </Shell>
+    );
+  }
+
+  if (tab === "outcomes" && outcomes) {
+    const pl = outcomes.placement;
+    const tr = outcomes.tr;
+    const stageName = STAGE_NAME[pl.stage];
+    const sinceText = pl.mix.since ? new Date(`${pl.mix.since}T00:00:00Z`).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" }) : "n/a";
+    const unit = tr.count === "interviews" ? "interviews" : "students";
+    return (
+      <Shell state={state} runId={run.runId} bar={bar}>
+        <Hero state={state} runAt={run.runAt} />
+        {pl.records === 0 && (
+          <p className="rounded-md border border-dashed bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
+            No placement data in this run. Put the &quot;Academy All Placed&quot; export at data/placements.csv and run bun run refresh.
+          </p>
+        )}
+        <Card className="gap-0 overflow-hidden rounded-lg py-0">
+          <div className="grid grid-cols-1 gap-px bg-border sm:grid-cols-2 xl:grid-cols-5">
+            <Kpi label="Assessed pool" value={pl.pool.toLocaleString()} sub={`Students who cleared ${stageName} (pool entry) in the selection`} icon={Users} chip="green" />
+            <Kpi
+              label="Pool → Placed %"
+              value={fmtPct(pl.poolToPlacedPct)}
+              sub={`${pl.placed.toLocaleString()} placed on or after pool entry · ${pl.placedAnyTime.toLocaleString()} have a placement at any time`}
+              icon={Briefcase}
+              chip="green"
+            />
+            <Kpi
+              label="Not cleared → Placed %"
+              value={fmtPct(pl.notCleared.pct)}
+              sub={`${pl.notCleared.placed.toLocaleString()} of ${pl.notCleared.attempted.toLocaleString()} who took ${stageName} but didn't clear, placed after their first attempt`}
+              icon={Users}
+              chip="amber"
+            />
+            <Kpi
+              label="Median days to placement"
+              value={pl.tat.median === null ? "n/a" : String(pl.tat.median)}
+              sub={`From pool entry (${stageName} clearance) to the first placement after it · mean ${pl.tat.mean ?? "n/a"}`}
+              icon={Timer}
+              chip="blue"
+            />
+            <Kpi
+              label="TR → Cleared %"
+              value={fmtPct(tr.total.clearedPct)}
+              sub={`${tr.total.cleared.toLocaleString()} of ${tr.total.attempted.toLocaleString()} ${unit} with a completed TR cleared`}
+              icon={Gavel}
+              chip="blue"
+            />
+          </div>
+        </Card>
+
+        <div className="grid gap-6 xl:grid-cols-2">
+          <Card className="gap-4 rounded-lg">
+            <CardHeader>
+              <div className="eyebrow">01 — Assessed vs not cleared</div>
+              <CardTitle className="font-serif text-2xl font-normal">Placed % by assessment result</CardTitle>
+              <CardDescription>
+                Students who cleared {stageName} (placed on or after clearing) vs students who took {stageName} and didn&apos;t clear (placed on or after
+                their first attempt).
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="px-2 sm:px-4">
+              <PctBars
+                data={[
+                  { label: `Cleared ${stageName} (pool)`, pct: pl.poolToPlacedPct, num: pl.placed, den: pl.pool },
+                  { label: `Took ${stageName}, not cleared`, pct: pl.notCleared.pct, num: pl.notCleared.placed, den: pl.notCleared.attempted },
+                ]}
+              />
+            </CardContent>
+          </Card>
+          <Card className="gap-4 rounded-lg">
+            <CardHeader>
+              <div className="eyebrow">02 — Who is getting placed</div>
+              <CardTitle className="font-serif text-2xl font-normal">Placements since {sinceText}</CardTitle>
+              <CardDescription>
+                {pl.mix.placed.toLocaleString()} students placed since the first {stageName} exam, by what they did in assessments (all assessment data,
+                not the filters). &quot;Not assessed&quot; = no assessment attempt on record.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="px-2 sm:px-4">
+              <CountBars data={pl.mix.groups} highlight="Cleared, then placed" />
+            </CardContent>
+          </Card>
+        </div>
+
+        <Card className="gap-4 rounded-lg">
+          <CardHeader>
+            <div className="eyebrow">03 — By competency</div>
+            <CardTitle className="font-serif text-2xl font-normal">Pool → Placed % by competency</CardTitle>
+            <CardDescription>
+              Pool = cleared that competency at {stageName}. Placed on or after that clearance. Placement type of the pool placements:{" "}
+              {pl.byType.map((t) => `${t.label.replace(/_/g, " ").toLowerCase()} ${t.count}`).join(", ") || "none"} · channel:{" "}
+              {pl.byChannel.map((t) => `${t.label.replace(/_/g, " ").toLowerCase()} ${t.count}`).join(", ") || "none"}.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="px-2 sm:px-4">
+            <PctBars data={pl.byCompetency.map((c) => ({ label: c.competency, pct: c.pct, num: c.placed, den: c.pool }))} />
+          </CardContent>
+        </Card>
+
+        <Card className="gap-0 rounded-lg py-0">
+          <CardHeader className="border-b py-5">
+            <div className="eyebrow">04 — Technical round</div>
+            <CardTitle className="font-serif text-2xl font-normal">TR → Cleared % and verdict bands</CardTitle>
+            <CardDescription>
+              Completed TR interviews in the selection (needs TR in the Mode filter). Cleared % counts {unit}; verdict bands are the share of interviews in each
+              band (Verdict Band column of the TR sheet).
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="flex flex-col gap-6 py-5">
+            <VerdictBars
+              rows={[
+                ...tr.byCompetency.map((c) => ({ label: c.competency, total: c.interviews, verdicts: c.verdicts })),
+                ...(tr.byCompetency.length > 1 ? [{ label: "All", total: tr.total.interviews, verdicts: tr.total.verdicts }] : []),
+              ]}
+            />
+          </CardContent>
+          {tr.byCompetency.length > 0 && (
+            <div className="border-t">
+              <Table className="tabular">
+                <TableHeader className="bg-muted/50">
+                  <TableRow className="hover:bg-transparent">
+                    <TableHead className="pl-5">Competency</TableHead>
+                    <TableHead className="text-right">TR attempted</TableHead>
+                    <TableHead className="text-right">Cleared</TableHead>
+                    <TableHead className="text-right">TR → Cleared %</TableHead>
+                    {tr.total.verdicts.map((v) => (
+                      <TableHead key={v.label} className="text-right last:pr-5">
+                        {v.label}
+                      </TableHead>
+                    ))}
+                  </TableRow>
+                </TableHeader>
+                <TableBody className="font-mono">
+                  {[...tr.byCompetency, { competency: "All", ...tr.total }].map((c) => (
+                    <TableRow key={c.competency} className={c.competency === "All" ? "font-semibold" : undefined}>
+                      <TableCell className="pl-5 font-sans font-medium">{c.competency}</TableCell>
+                      <TableCell className="text-right">{c.attempted.toLocaleString()}</TableCell>
+                      <TableCell className="text-right">{c.cleared.toLocaleString()}</TableCell>
+                      <TableCell className="text-right">{fmtPct(c.clearedPct)}</TableCell>
+                      {c.verdicts.map((v) => (
+                        <TableCell key={v.label} className="text-right last:pr-5">
+                          {v.count} <span className="text-xs text-muted-foreground">({fmtPct(v.pct, 0)})</span>
+                        </TableCell>
+                      ))}
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+          )}
+        </Card>
+      </Shell>
+    );
+  }
+
+  if (tab === "students") {
+    const list = students?.students ?? [];
+    return (
+      <Shell state={state} runId={run.runId} bar={bar}>
+        <Hero state={state} runAt={run.runAt} />
+        <Card className="gap-0 rounded-lg py-0">
+          <CardHeader className="border-b py-5">
+            <div className="eyebrow">01 — Student-wise</div>
+            <CardTitle className="font-serif text-2xl font-normal">Students</CardTitle>
+            <CardDescription>
+              Candidate IDs only; the data has no names or emails. Attempts count assessment sittings and TR interviews in the selected modes (
+              {f.modes.join(" + ")}). Cleared = cleared at the {STAGE_NAME[ov.settings.clearanceStage]} stage, the same rule as the headline. The download
+              has the rows matching the search, in the current sort order.
+            </CardDescription>
+          </CardHeader>
+          <StudentsTable students={list} clearedLabel={STAGE_NAME[ov.settings.clearanceStage].toLowerCase()} activeDays={ov.options.activeDays} />
+        </Card>
       </Shell>
     );
   }
@@ -385,7 +696,17 @@ async function Dashboard({ searchParams }: { searchParams: Promise<SP> }) {
           />
         </div>
         <div className="grid grid-cols-1 gap-px border-t bg-border sm:grid-cols-3 xl:grid-cols-6">
-          <PendingKpi label="Pool → Placed % (FT)" needs="Needs placement data" />
+          {outcomes ? (
+            <Kpi
+              label="Pool → Placed %"
+              value={fmtPct(outcomes.placement.poolToPlacedPct)}
+              sub={`${outcomes.placement.placed.toLocaleString()} of ${outcomes.placement.pool.toLocaleString()} assessed-pool students placed after pool entry`}
+              icon={Briefcase}
+              chip="green"
+            />
+          ) : (
+            <PendingKpi label="Pool → Placed %" needs="Needs placement data" />
+          )}
           <PendingKpi label="FT (active)" needs="Needs placement data" />
           <PendingKpi label="Intern" needs="Needs placement data" />
           <PendingKpi label="Intern (active)" needs="Needs placement data" />
@@ -422,13 +743,8 @@ async function Dashboard({ searchParams }: { searchParams: Promise<SP> }) {
 
 function Loading() {
   return (
-    <div className="flex min-h-svh">
-      <div className="hidden w-64 border-r bg-sidebar md:block" />
-      <div className="flex flex-1 flex-col gap-6 p-8">
-        <Skeleton className="h-12 w-72" />
-        <Skeleton className="h-32 w-full" />
-        <Skeleton className="h-96 w-full" />
-      </div>
+    <div className="flex min-h-svh items-center justify-center gap-2 text-sm text-muted-foreground">
+      <Spinner className="size-5" /> Loading metrics…
     </div>
   );
 }

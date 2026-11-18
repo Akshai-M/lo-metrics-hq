@@ -101,13 +101,25 @@ export function extractSections(row: Row, competency: CompetencyId) {
     }
     sections[key] = row[col];
   }
+  // A "Final <section> Score" column (e.g. "Final Web coding Score", after manual re-marking)
+  // overrides that section's user score columns.
+  for (const col of Object.keys(row)) {
+    const m = col.match(/^final (.+) score$/i);
+    const key = m && aliases[norm(m[1])];
+    if (key) sections[key] = row[col];
+  }
   return { sections, unknown };
 }
 
-export function findRuleset(competency: CompetencyId, mode: string, day: string): string | null {
+export function findRuleset(competency: CompetencyId, mode: string, day: string, exam?: string): string | null {
   for (const w of CUTOFF_WINDOWS) {
     if (w.competency !== competency) continue;
     if (w.mode !== "any" && w.mode !== mode) continue;
+    // Exam-specific windows match on the assessment number, whatever the attempt date.
+    if (w.exam) {
+      if (w.exam === exam?.trim()) return w.ruleset;
+      continue;
+    }
     if (w.start && day < w.start) continue;
     if (w.end && day > w.end) continue;
     return w.ruleset;
@@ -115,8 +127,8 @@ export function findRuleset(competency: CompetencyId, mode: string, day: string)
   return null;
 }
 
-export function evaluateAttempt(row: Row, competency: CompetencyId, mode: string, day: string, rulesetName?: string) {
-  const ruleset = rulesetName ?? findRuleset(competency, mode, day);
+export function evaluateAttempt(row: Row, competency: CompetencyId, mode: string, day: string, rulesetName?: string, exam?: string) {
+  const ruleset = rulesetName ?? findRuleset(competency, mode, day, exam);
   const result = { qualified: null as boolean | null, ruleset, reason: "", failed: [] as string[], unknown: [] as string[] };
   if (!ruleset) {
     result.reason = "no cutoff window matches attempt date";
@@ -234,7 +246,7 @@ export function buildAttempts(eventsWithRows: { event: AssessmentEvent; rows: Ro
         gaps.rowsBadDate++;
         continue;
       }
-      const ev = evaluateAttempt(row, competency, mode, when.day);
+      const ev = evaluateAttempt(row, competency, mode, when.day, undefined, event.assessmentNumber);
       if (!ev.ruleset) gaps.rowsNoCutoffWindow++;
       if (ev.qualified === null) gaps.rowsUnevaluable++;
       ev.unknown.forEach((u) => unknown.add(u));

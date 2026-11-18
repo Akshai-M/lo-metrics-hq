@@ -137,10 +137,82 @@ export type Splits = {
   runId: string;
   trCount: "students" | "interviews";
   modes: string[];
-  period: { grain: "month" | "week"; columns: PeriodColumn[]; rows: PeriodSplitRow[] };
+  period: {
+    grain: "month" | "week";
+    columns: PeriodColumn[];
+    rows: PeriodSplitRow[];
+    totals: PeriodSplitRow[];
+    subset: PeriodSplitRow[]; // the competencies picked in the period chart, students counted once
+    subsetComps: string[];
+  };
   overall: { asOf: string | null; rows: OverallRow[]; total: OverallRow; trLevels: TrLevels[] };
   yog: YogGroup[];
 };
 
-export const getSplits = (grain: "month" | "week", filters: string) =>
-  get<Splits>(`/api/splits?grain=${grain}${filters ? `&${filters}` : ""}`);
+export const getSplits = (grain: "month" | "week", filters: string, pcomps?: string | null) =>
+  get<Splits>(`/api/splits?grain=${grain}${filters ? `&${filters}` : ""}${pcomps ? `&pcomps=${pcomps}` : ""}`);
+
+const withFilters = (path: string, filters: string) => `${path}${path.includes("?") ? "&" : "?"}${filters}`.replace(/[?&]$/, "");
+
+export type Bucket = { bucket: string; count: number };
+export type Reattempts = {
+  runId: string;
+  competency: string | null;
+  pairs: number;
+  clearedPairs: number;
+  attemptsToClear: Bucket[];
+  daysToClear: Bucket[];
+  daysBetween: { median: number | null; pairs: number };
+  range: { from: string | null; to: string | null };
+};
+/** Attempts-to-clear and duration views; comp = one competency, null = all selected. */
+export const getReattempts = (comp: string | null, filters: string) =>
+  get<Reattempts>(withFilters(`/api/reattempts${comp ? `?rcomp=${comp}` : ""}`, filters));
+
+export type FailureSection = { section: string; label: string; count: number; pct: number };
+export type Failures = {
+  runId: string;
+  competencies: { competency: string; modes: { mode: string; failedAttempts: number; sections: FailureSection[] }[] }[];
+};
+export const getFailures = (filters: string) => get<Failures>(withFilters("/api/failures", filters));
+
+export type StudentRow = {
+  candidateId: string;
+  yog: string;
+  competencies: string[];
+  attempts: number;
+  cleared: string[];
+  trLevel: string | null;
+  trLevelCompetency: string | null;
+  lastAttempt: string;
+  active: boolean;
+};
+export const getStudents = (filters: string) => get<{ runId: string; students: StudentRow[] }>(withFilters("/api/students", filters));
+
+export type Count = { label: string; count: number };
+export type TrOutcome = {
+  attempted: number;
+  cleared: number;
+  clearedPct: number | null;
+  interviews: number;
+  verdicts: { label: string; count: number; pct: number | null }[];
+};
+export type Outcomes = {
+  runId: string;
+  placement: {
+    stage: Stage;
+    pool: number;
+    placed: number;
+    placedAnyTime: number;
+    poolToPlacedPct: number | null;
+    notCleared: { attempted: number; placed: number; pct: number | null };
+    tat: { median: number | null; mean: number | null };
+    byType: Count[];
+    byChannel: Count[];
+    byCompetency: { competency: string; pool: number; placed: number; pct: number | null }[];
+    mix: { since: string | null; placed: number; groups: Count[] };
+    records: number;
+  };
+  tr: { count: "students" | "interviews"; total: TrOutcome; byCompetency: (TrOutcome & { competency: string })[] };
+};
+export const getOutcomes = (filters: string) => get<Outcomes>(withFilters("/api/outcomes", filters));

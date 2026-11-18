@@ -8,10 +8,12 @@
  *   ft_comp_periods   weekly / monthly attempted, cleared, clearance %
  *   ft_comp_students  one row per student with per-competency detail (jsonb)
  *   ft_comp_tr        one row per TR interview (candidate_id only)
+ *   ft_comp_placements one row per placement record (candidate_id, dates, status, type only)
  */
 import postgres from "postgres";
 import type { Attempt, Metrics, PeriodRow, StudentRow } from "./competency";
 import type { TrInterview } from "./tr";
+import type { Placement } from "./placements";
 
 // postgres.js: works on Node (Vercel) and Bun. Serverless gets a single connection per instance.
 type Sql = postgres.Sql;
@@ -73,7 +75,14 @@ CREATE TABLE IF NOT EXISTS ft_comp_tr (
   competency text NOT NULL, tab text, interview_on date, status text,
   attempted boolean, cleared boolean, level text, yog text
 );
-CREATE INDEX IF NOT EXISTS ft_comp_tr_run ON ft_comp_tr (run_id);`;
+CREATE INDEX IF NOT EXISTS ft_comp_tr_run ON ft_comp_tr (run_id);
+ALTER TABLE ft_comp_tr ADD COLUMN IF NOT EXISTS verdict text;
+CREATE TABLE IF NOT EXISTS ft_comp_placements (
+  run_id uuid NOT NULL REFERENCES ft_comp_runs(run_id) ON DELETE CASCADE,
+  candidate_id text NOT NULL,
+  entry_on date, status text, latest_status text, placed_through text, placement_type text, company_type text
+);
+CREATE INDEX IF NOT EXISTS ft_comp_placements_run ON ft_comp_placements (run_id);`;
 
 export type EventRow = {
   event_idx: number;
@@ -102,6 +111,7 @@ export async function persistRun(input: {
   periods: PeriodRow[];
   students: StudentRow[];
   tr: TrInterview[];
+  placements: Placement[];
   summaryMd: string;
   report: Record<string, unknown>;
 }): Promise<string> {
@@ -183,7 +193,22 @@ export async function persistRun(input: {
         attempted: t.attempted,
         cleared: t.cleared,
         level: t.level,
+        verdict: t.verdict,
         yog: t.yog ?? null,
+      }))
+    );
+    await insertChunked(
+      tx,
+      "ft_comp_placements",
+      input.placements.map((p) => ({
+        run_id: runId,
+        candidate_id: p.candidateId,
+        entry_on: p.day,
+        status: p.status,
+        latest_status: p.latestStatus,
+        placed_through: p.placedThrough,
+        placement_type: p.placementType,
+        company_type: p.companyType,
       }))
     );
   });
@@ -269,7 +294,7 @@ export async function runHistory(limit = 20) {
 export async function runAttempts(runId: string) {
   const rows = await db()`
     SELECT candidate_id, competency, mode, to_char(attempted_on, 'YYYY-MM-DD') AS day,
-           to_char(attempted_on, 'YYYY-MM-DD"T"HH24:MI:SS.MS') AS stamp, qualified, yog
+           to_char(attempted_on, 'YYYY-MM-DD"T"HH24:MI:SS.MS') AS stamp, qualified, yog, failed_sections
       FROM ft_comp_attempts WHERE run_id = ${runId}`;
   return (rows as Record<string, unknown>[]).map((r) => ({
     candidateId: r.candidate_id as string,
@@ -279,13 +304,15 @@ export async function runAttempts(runId: string) {
     stamp: r.stamp as string,
     qualified: r.qualified as boolean | null,
     yog: (r.yog as string | null) ?? null,
+    // Stored as gated section keys joined with ";" (see evaluateAttempt).
+    failed: ((r.failed_sections as string | null) ?? "").split(";").filter(Boolean),
   }));
 }
 
 /** TR interviews of a run (attempted ones only), for the splits. */
 export async function runTr(runId: string) {
   const rows = await db()`
-    SELECT candidate_id, competency, to_char(interview_on, 'YYYY-MM-DD') AS day, cleared, level, yog
+    SELECT candidate_id, competency, to_char(interview_on, 'YYYY-MM-DD') AS day, cleared, level, verdict, yog
       FROM ft_comp_tr WHERE run_id = ${runId} AND attempted`;
   return rows.map((r) => ({
     candidateId: r.candidate_id as string,
@@ -293,6 +320,23 @@ export async function runTr(runId: string) {
     day: r.day as string,
     cleared: r.cleared as boolean,
     level: (r.level as string | null) ?? null,
+    verdict: (r.verdict as string | null) ?? null,
     yog: (r.yog as string | null) ?? null,
+  }));
+}
+
+/** Placement records of a run. */
+export async function runPlacements(runId: string) {
+  const rows = await db()`
+    SELECT candidate_id, to_char(entry_on, 'YYYY-MM-DD') AS day, status, latest_status, placed_through, placement_type, company_type
+      FROM ft_comp_placements WHERE run_id = ${runId}`;
+  return rows.map((r) => ({
+    candidateId: r.candidate_id as string,
+    day: r.day as string | null,
+    status: r.status as string,
+    latestStatus: r.latest_status as string,
+    placedThrough: r.placed_through as string,
+    placementType: r.placement_type as string,
+    companyType: r.company_type as string,
   }));
 }

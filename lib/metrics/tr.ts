@@ -1,6 +1,6 @@
 /**
  * TR (technical round) interviews from the post-offline sheet.
- * Only UID, date, status, clearance and level are kept (no names or emails, also in the cache).
+ * Only UID, date, status, clearance, level and verdict band are kept (no names or emails, also in the cache).
  */
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
@@ -17,10 +17,11 @@ export type TrInterview = {
   attempted: boolean;
   cleared: boolean;
   level: string | null;
+  verdict: string | null; // Verdict Band: Strong Hire / Medium Hire / Low Hire / Reject
   yog?: string | null;
 };
 
-type TrRow = { UID: string; Date: unknown; Status: string; Clearance: string; Level: string };
+type TrRow = { UID: string; Date: unknown; Status: string; Clearance: string; Level: string; Verdict?: string };
 
 /** Sheet dates come as ISO timestamps (IST midnight in UTC) or as "DD/MM/YYYY" text. */
 export function trDay(v: unknown): string | null {
@@ -45,6 +46,7 @@ async function fetchTab(tab: string): Promise<TrRow[]> {
         Status: String(r.Status ?? "").trim(),
         Clearance: String(r["Clearance Status"] ?? "").trim(),
         Level: String(r.Level ?? r.Levels ?? "").trim(),
+        Verdict: String(r["Verdict Band"] ?? "").trim(),
       }));
     } catch (err) {
       last = err;
@@ -88,6 +90,7 @@ export async function loadTr(refresh: boolean, log: (m: string) => void = () => 
           attempted: TR_ATTEMPTED_STATUSES.includes(r.Status),
           cleared: r.Clearance === TR_CLEARED_VALUE,
           level: r.Level || null,
+          verdict: r.Verdict || null,
         });
       }
       tabs.push({ tab, rows: rows.length, interviews: n, undated });

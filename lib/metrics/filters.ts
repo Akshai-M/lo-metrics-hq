@@ -28,6 +28,8 @@ export type Row = {
   yog: string | null;
   level: string | null; // TR only
   attemptNo: number; // 1 = first sitting
+  failed: string[]; // gated sections below cutoff (not-cleared assessment attempts; [] for TR)
+  verdict: string | null; // TR only: Verdict Band
 };
 
 export type AttemptType = "all" | "first" | "re";
@@ -63,7 +65,7 @@ function addDays(day: string, n: number) {
 export async function loadRows(runId: string): Promise<Row[]> {
   const [base, tr] = await Promise.all([runAttempts(runId), runTr(runId)]);
   return [
-    ...base.map((a) => ({ ...a, level: null, attemptNo: 0 })),
+    ...base.map((a) => ({ ...a, level: null, verdict: null, attemptNo: 0 })),
     ...tr.map((t) => ({
       candidateId: t.candidateId,
       competency: t.competency,
@@ -73,7 +75,9 @@ export async function loadRows(runId: string): Promise<Row[]> {
       qualified: t.cleared,
       yog: t.yog,
       level: t.level,
+      verdict: t.verdict,
       attemptNo: 0,
+      failed: [],
     })),
   ];
 }
@@ -139,5 +143,6 @@ export function applyFilters(all: Row[], q: FilterQuery) {
     options,
     rows: f.unevaluable ? base : base.filter((r) => r.qualified !== null),
     unevaluableRows,
+    isActive: (id: string) => activeSet.has(id),
   };
 }

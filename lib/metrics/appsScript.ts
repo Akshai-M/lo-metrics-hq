@@ -63,11 +63,15 @@ export async function fetchEvents(refresh: boolean): Promise<AssessmentEvent[]> 
 
 /** Picks which tabs to read, per the agreed priority. */
 export function chooseTabs(available: string[]): { rule: string | null; names: string[] } {
-  const resultTab = available.find((n) => n.toLowerCase().includes("result"));
-  if (resultTab) return { rule: "result-tab", names: [resultTab] };
+  // Every results tab (e.g. "TSB Results" + "Normal Results" + "2nd Normal Results"), read together.
+  const resultTabs = available.filter((n) => n.toLowerCase().includes("result"));
+  if (resultTabs.length) return { rule: "result-tab", names: resultTabs };
   const stripped = new Map(available.map((n) => [n.trim(), n]));
-  const normal = TABS.normal.map((n) => stripped.get(n)).find(Boolean);
-  const tsb = stripped.get(TABS.tsb);
+  // Exact names first, then the variants seen in later sheets: "Normal Assessment",
+  // "TSB Assessment", and the misspelt "TBS Assesment".
+  const starts = (prefixes: string[]) => available.find((n) => prefixes.some((p) => n.trim().toLowerCase().startsWith(p)));
+  const normal = TABS.normal.map((n) => stripped.get(n)).find(Boolean) ?? starts(["normal"]);
+  const tsb = stripped.get(TABS.tsb) ?? starts(["tsb", "tbs"]);
   if (tsb && normal) return { rule: "TSB+Normal", names: [tsb, normal] };
   const main = stripped.get(TABS.main);
   if (main) return { rule: "Sheet1", names: [main] };
@@ -83,17 +87,30 @@ async function fetchResult(idx: number, link: string): Promise<CachedResult> {
     const discover = await call([["action", "subsheets"], ["link", link], ...[TABS.main, TABS.tsb, ...TABS.normal].map((n) => ["subsheet", n] as [string, string])]);
     available = discover?.availableSubsheets ?? [];
     error = discover?.error ?? "";
-    const { rule, names } = chooseTabs(available);
+    let { rule, names } = chooseTabs(available);
+    // Some exports leave Sheet1 empty and put the rows in a "users_completed_assessment_stats__<id>" tab.
+    const stats = available.find((n) => n.trim().toLowerCase().startsWith("users_completed_assessment_stats"));
+    if (rule === "Sheet1" && stats) {
+      const probe = await call([["action", "subsheets"], ["link", link], ["subsheet", names[0].trim()]]);
+      if (!(probe?.subsheets?.[names[0].trim()]?.rows ?? []).length) ({ rule, names } = { rule: "stats-tab", names: [stats] });
+    }
     if (rule) {
       // Call 2: fetch the chosen tabs (the endpoint matches trimmed names).
       const got = await call([["action", "subsheets"], ["link", link], ...names.map((n) => ["subsheet", n.trim()] as [string, string])]);
       const subs = got?.subsheets ?? {};
       const rows: Row[] = [];
       const read: string[] = [];
+      // A candidate listed in two tabs for the same sitting (same attempted_on) is kept once.
+      const seen = new Set<string>();
       for (const n of names) {
         const tab = subs[n.trim()];
         if (!tab) continue;
-        for (const r of tab.rows as Row[]) rows.push({ ...r, _source: n.trim() });
+        for (const r of tab.rows as Row[]) {
+          const key = `${r.candidate_id}|${r.attempted_on ?? ""}`;
+          if (names.length > 1 && r.candidate_id && seen.has(key)) continue;
+          seen.add(key);
+          rows.push({ ...r, _source: n.trim() });
+        }
         read.push(n.trim());
       }
       if (read.length) data = { rule, subsheetName: read.join(" + "), rowCount: rows.length, rows, link, availableSubsheets: available };
@@ -116,7 +133,7 @@ export async function loadCachedResult(idx: number): Promise<CachedResult | null
 
 /**
  * Ensures every event with a link has a cached result.
- * refresh: re-fetch all; refreshErrors: re-fetch only cached errors.
+ * refresh: re-fetch all; refreshErrors: re-fetch only cached errors and empty sheets.
  */
 export async function ensureResults(
   events: AssessmentEvent[],
@@ -129,7 +146,9 @@ export async function ensureResults(
   for (const e of events) {
     if (!e.resultsLink || !inScope(e)) continue;
     const cached = await loadCachedResult(e.idx);
-    if (opts.refresh || !cached || (opts.refreshErrors && "error" in cached)) todo.push(e);
+    // refreshErrors also retries sheets that were empty when last read (results not entered yet).
+    const retry = opts.refreshErrors && cached && ("error" in cached || cached.rowCount === 0);
+    if (opts.refresh || !cached || retry) todo.push(e);
   }
   if (!todo.length) return;
   log(`Fetching ${todo.length} results sheet(s)...`);

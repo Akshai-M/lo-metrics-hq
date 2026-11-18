@@ -91,7 +91,7 @@ export function overview(rows: Row[], unevaluableRows: Row[], comps: string[], g
 const MODE_ORDER = ["Online", "Offline", "TR"] as const;
 
 /** Rows that make up a stage: attempts at its mode, and the qualifying ones ("both": TR clears in a competency also cleared offline). */
-function stageRows(rows: Row[], stage: Stage) {
+export function stageRows(rows: Row[], stage: Stage) {
   const mode = stage === "tr" ? "TR" : "Offline";
   const attempts = rows.filter((r) => r.mode === mode);
   if (stage !== "both") return { attempts, clears: attempts.filter((r) => r.qualified) };

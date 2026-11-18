@@ -76,6 +76,28 @@ export const SECTION_ALIASES: Partial<Record<CompetencyId, Record<string, string
   },
 };
 
+/** Display names for gated section keys (failure-reason charts). */
+export const SECTION_LABELS: Record<string, string> = {
+  PS_CODING: "Problem solving coding",
+  DSA_MCQ: "DSA MCQs",
+  HTML_CSS_MCQ: "HTML & CSS MCQs",
+  WEB_CODING: "Web coding",
+  JS_MCQ: "JavaScript MCQs",
+  JS_CODING: "JS coding",
+  REACT_MCQ: "React MCQs",
+  REACT_IDE: "React IDE coding",
+  PROD_MCQ: "Production-ready MCQs",
+  CS_FUND: "CS fundamentals",
+  OOP1: "OOP 1 (MCQ)",
+  OOP2: "OOP 2 (coding)",
+  SQL1: "SQL 1 (MCQ)",
+  SQL2: "SQL 2 (coding)",
+  NODE_MCQ: "Node.js MCQs",
+  NODE_IDE: "Node.js IDE coding",
+  GENAI_MCQ: "Gen AI MCQs",
+  __OVERALL__: "Overall score",
+};
+
 /** Special cutoff key: compare overall_candidate_score instead of sections. */
 export const OVERALL = "__OVERALL__";
 
@@ -123,6 +145,20 @@ export const RULESETS: Record<string, Partial<Record<CompetencyId, ModeRules>>> 
     },
   },
   GENAI_DETAILED: { C7: { any: { GENAI_MCQ: 24 } } },
+
+  // Exam-specific QCs (from each exam's "Pattern & QC" tab, confirmed by the team, 18 Nov 2026).
+  // DSA offline A1, 16 Aug: Problem Solving Coding 25/120, DSA MCQs 5/10.
+  DSA_OFF_16AUG: { C1: { Offline: { PS_CODING: 25, DSA_MCQ: 5 } } },
+  // FE online A2, 14 Aug (JS Coding out of 40).
+  FE_ON_14AUG: { C2: { Online: { HTML_CSS_MCQ: 9, WEB_CODING: 18, JS_MCQ: 9, JS_CODING: 30, REACT_MCQ: 9, REACT_IDE: 0, PROD_MCQ: 6 } } },
+  // FE offline A1, 16 Aug.
+  FE_OFF_16AUG: { C2: { Offline: { HTML_CSS_MCQ: 9, JS_MCQ: 7, JS_CODING: 10, REACT_MCQ: 7, REACT_IDE: 0, PROD_MCQ: 6 } } },
+  // BE online A1, 7 Aug.
+  BE_ON_7AUG: { C4: { Online: { NODE_MCQ: 27, PROD_MCQ: 12, NODE_IDE: 16 } } },
+  // SE online A1, 4 Aug (OOP 2 out of 90).
+  SE_ON_4AUG: { C3: { Online: { CS_FUND: 27, OOP1: 18, OOP2: 36, SQL1: 18, SQL2: 30 } } },
+  // SE online A2, 18 Aug (OOP 2 out of 60).
+  SE_ON_18AUG: { C3: { Online: { CS_FUND: 27, OOP1: 18, OOP2: 24, SQL1: 18, SQL2: 30 } } },
 };
 
 export type CutoffWindow = {
@@ -131,10 +167,19 @@ export type CutoffWindow = {
   start: string | null; // inclusive YYYY-MM-DD
   end: string | null; // inclusive YYYY-MM-DD
   ruleset: string | null; // null = no confirmed cutoff -> unevaluable
+  exam?: string; // assessment number (e.g. "A2"): applies to that exam only, whatever the attempt date
 };
 
 /** Which ruleset applies by attempt date. First match wins. */
 export const CUTOFF_WINDOWS: CutoffWindow[] = [
+  // Single exams with their own QC, matched by assessment number (some candidates finish after
+  // midnight, so the attempt date alone would miss them). See the exam-specific rulesets above.
+  { competency: "C1", mode: "Offline", start: null, end: null, exam: "A1", ruleset: "DSA_OFF_16AUG" },
+  { competency: "C2", mode: "Online", start: null, end: null, exam: "A2", ruleset: "FE_ON_14AUG" },
+  { competency: "C2", mode: "Offline", start: null, end: null, exam: "A1", ruleset: "FE_OFF_16AUG" },
+  { competency: "C4", mode: "Online", start: null, end: null, exam: "A1", ruleset: "BE_ON_7AUG" },
+  { competency: "C3", mode: "Online", start: null, end: null, exam: "A1", ruleset: "SE_ON_4AUG" },
+  { competency: "C3", mode: "Online", start: null, end: null, exam: "A2", ruleset: "SE_ON_18AUG" },
   { competency: "C1", mode: "any", start: null, end: "2026-07-25", ruleset: "DSA_OVERALL25" },
   { competency: "C1", mode: "any", start: "2026-07-26", end: "2026-10-31", ruleset: "DSA_AUG_OCT" },
   { competency: "C1", mode: "any", start: "2026-11-01", end: null, ruleset: "DSA_NOV" },
@@ -148,7 +193,7 @@ export const CUTOFF_WINDOWS: CutoffWindow[] = [
 
 /**
  * Results-tab rules, in priority order (temporary until naming is standardised):
- *  1. a tab whose name contains "result"
+ *  1. every tab whose name contains "result", combined
  *  2. "TSB" + "Normal" (or "Normal link") -> both, combined
  *  3. "Sheet1"
  */
@@ -168,7 +213,8 @@ export const TR_TABS: { competency: CompetencyId; tabs: string[] }[] = [
   { competency: "C3", tabs: ["SE Fundamentals"] },
 ];
 /** Interview statuses that count as attempted (no_show and cancelled do not). */
-export const TR_ATTEMPTED_STATUSES = ["completed", "partially_completed"];
+// partially_completed is not counted (confirmed by the team, 18 Nov 2026: the TR sheet counts it out).
+export const TR_ATTEMPTED_STATUSES = ["completed"];
 /** Cleared = "Clearance Status" is exactly this. */
 export const TR_CLEARED_VALUE = "Cleared";
 /**

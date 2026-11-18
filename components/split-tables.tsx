@@ -8,7 +8,7 @@ const MODE_TEXT: Record<string, string> = { Online: "text-online-text", Offline:
 const MODE_DOT: Record<string, string> = { Online: "bg-online", Offline: "bg-offline", TR: "bg-tr" };
 
 /** Competency x mode x stage (Attempted / Qualified) by period. */
-export function PeriodSplitTable({ split, action }: { split: Splits["period"]; action?: React.ReactNode }) {
+export function PeriodSplitTable({ split, action, index = "01" }: { split: Splits["period"]; action?: React.ReactNode; index?: string }) {
   const groups = new Map<string, Splits["period"]["rows"]>();
   for (const r of split.rows) {
     if (!groups.has(r.competency)) groups.set(r.competency, []);
@@ -19,7 +19,7 @@ export function PeriodSplitTable({ split, action }: { split: Splits["period"]; a
     <Card className="gap-0 rounded-lg py-0">
       <CardHeader className="flex flex-col gap-3 border-b py-5 sm:flex-row sm:items-start sm:justify-between">
         <div className="flex min-w-0 flex-col gap-1">
-        <div className="eyebrow">01 — Attempted &amp; qualified</div>
+        <div className="eyebrow">{index} — Attempted &amp; qualified</div>
         <CardTitle className="font-serif text-2xl font-normal">{split.grain === "week" ? "Weekly split" : "Monthly split"}</CardTitle>
         <CardDescription>
           Distinct students per competency, mode and {split.grain === "week" ? "week (1-7, 8-14, 15-21, 22-28, 29-end of each month)" : "month"}.

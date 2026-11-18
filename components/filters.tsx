@@ -12,6 +12,8 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { Button } from "@/components/ui/button";
+import { Spinner } from "@/components/ui/spinner";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 
@@ -22,6 +24,8 @@ export function SegmentedNav({ value, options, label }: { value: string; options
   const router = useRouter();
   const [pending, start] = useTransition();
   return (
+    <div className="flex items-center gap-2">
+    {pending && <Spinner className="text-muted-foreground" />}
     <ToggleGroup
       aria-label={label}
       value={[value]}
@@ -44,16 +48,18 @@ export function SegmentedNav({ value, options, label }: { value: string; options
         </ToggleGroupItem>
       ))}
     </ToggleGroup>
+    </div>
   );
 }
 
 /** Labelled dropdown that navigates. */
 export function SelectNav({ value, options, label }: { value: string; options: Option[]; label: string }) {
   const router = useRouter();
-  const [, start] = useTransition();
+  const [pending, start] = useTransition();
   return (
-    <div className="flex items-center gap-2">
-      <span className="eyebrow">{label}</span>
+    <div className="flex w-full items-center gap-2 sm:w-auto">
+      <span className="eyebrow shrink-0">{label}</span>
+      {pending && <Spinner className="shrink-0 text-muted-foreground" />}
       <Select
         value={value}
         items={options.map((o) => ({ value: o.value, label: o.label }))}
@@ -62,10 +68,10 @@ export function SelectNav({ value, options, label }: { value: string; options: O
           if (next && next.value !== value) start(() => router.push(next.href, { scroll: false }));
         }}
       >
-        <SelectTrigger className="min-w-44 bg-card">
+        <SelectTrigger className="w-full min-w-44 bg-card sm:w-auto">
           <SelectValue />
         </SelectTrigger>
-        <SelectContent>
+        <SelectContent alignItemWithTrigger={false} align="start" className="w-auto min-w-(--anchor-width) max-w-[calc(100vw-2rem)]">
           {options.map((o) => (
             <SelectItem key={o.value} value={o.value}>
               {o.label}
@@ -122,13 +128,18 @@ export function MultiSelect({
       <span className="eyebrow">{label}</span>
       <DropdownMenu>
         <DropdownMenuTrigger
-          className="flex h-8 w-full max-w-64 min-w-36 items-center justify-between gap-1.5 rounded-lg border border-input bg-card py-2 pr-2 pl-2.5 text-sm whitespace-nowrap outline-none select-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 data-[pending=true]:opacity-70"
-          data-pending={pending}
+          render={
+            <Button
+              variant="outline"
+              className="w-full min-w-36 justify-between bg-card pr-2 pl-2.5 font-normal data-[pending=true]:opacity-70 lg:max-w-64"
+              data-pending={pending}
+            />
+          }
         >
           <span className="truncate">{summary}</span>
-          <ChevronDownIcon className="size-4 shrink-0 text-muted-foreground" />
+          <ChevronDownIcon className="text-muted-foreground" />
         </DropdownMenuTrigger>
-        <DropdownMenuContent align="start" className="w-auto min-w-(--anchor-width)">
+        <DropdownMenuContent align="start" className="w-auto max-w-[calc(100vw-2rem)] min-w-(--anchor-width)">
           <DropdownMenuGroup>
             <DropdownMenuItem disabled={all} closeOnClick={false} onClick={() => apply(enabled)}>
               Select all
