@@ -6,7 +6,7 @@
 
 /* Palette: warm paper surfaces, deep-green primary.
    Chart series (validated for colour-blind separation on the card surface):
-   ochre = attempted / offline, green = cleared, blue = clearance rate / online. */
+   ochre = attempted / offline, green = cleared, blue = clearance rate / online, berry = TR. */
 :root {
   color-scheme: light;
   --background: #f6f5f0;
@@ -40,6 +40,8 @@
   --online-text: #2a5ea8;
   --offline: #c47a38;
   --offline-text: #9a5a1f;
+  --tr: #b8467f; /* TR (technical round), berry */
+  --tr-text: #93305f;
   --positive: #157347;
   --negative: #b42318;
 
@@ -81,6 +83,8 @@
   --color-online-text: var(--online-text);
   --color-offline: var(--offline);
   --color-offline-text: var(--offline-text);
+  --color-tr: var(--tr);
+  --color-tr-text: var(--tr-text);
   --color-positive: var(--positive);
   --color-negative: var(--negative);
   --color-chip-green: var(--chip-green);

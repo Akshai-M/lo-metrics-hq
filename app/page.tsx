@@ -1,11 +1,13 @@
 import { Suspense } from "react";
 import { connection } from "next/server";
 import { redirect } from "next/navigation";
-import { AlertTriangle, BadgeCheck, CalendarDays, RefreshCw, Users } from "lucide-react";
+import { Activity, AlertTriangle, BadgeCheck, CalendarDays, Database, Repeat, RefreshCw, Users } from "lucide-react";
 import { AppSidebar } from "@/components/app-sidebar";
 import { TABS, type Tab } from "@/lib/tabs";
-import { ClearanceTrendChart, type Point } from "@/components/charts";
-import { SegmentedNav, SelectNav } from "@/components/filters";
+import { ClearanceTrendChart, CompetencyClearanceChart, type Point } from "@/components/charts";
+import { StageFunnel } from "@/components/funnel";
+import { SegmentedNav } from "@/components/filters";
+import { GlobalFilters } from "@/components/global-filters";
 import { ModeBenchmark, OverallModeCard, YogCohortSplits } from "@/components/mode-split";
 import { PeriodSplitTable } from "@/components/split-tables";
 import { Badge } from "@/components/ui/badge";
@@ -13,24 +15,25 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Separator } from "@/components/ui/separator";
 import { SidebarInset, SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { COMPETENCIES, getLatestMetrics, getMe, getPeriods, getSplits, type PeriodRow } from "@/lib/api";
+import { COMPETENCIES, FILTER_KEYS, getLatestMetrics, getMe, getOverview, getSplits, type Overview } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
 type Grain = "month" | "week";
 type SP = { [key: string]: string | string[] | undefined };
-type State = { tab: Tab; grain: Grain; scope: string; user: string };
+// filters: the global filter params from the URL (FILTER_KEYS), as a query string; "" = defaults.
+type State = { tab: Tab; grain: Grain; filters: string; user: string };
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
 const DESCRIPTIONS: Record<Tab, string> = {
-  overview: "Students attempting and clearing FT competency assessments, online and offline.",
+  overview: "Students attempting and clearing FT competency assessments. Every number follows the filter bar.",
   splits: "Attempted and qualified students by competency, mode and period.",
-  yog: "Online vs offline clearance, overall and by year of graduation.",
-  competency: "Clearance by competency and by assessment mode.",
+  yog: "Clearance by mode, overall and by year of graduation.",
+  competency: "Clearance and reattempts by competency and by assessment mode.",
+  health: "Where the numbers come from: the latest run, exam events read, and attempts that could not be evaluated.",
 };
 
-function toPoint(p: PeriodRow): Point {
+function toPoint(p: Overview["periods"][number]): Point {
   if (p.grain === "month") {
     const [y, m] = p.period.split("-");
     const name = MONTHS[Number(m) - 1];
@@ -49,8 +52,7 @@ function href(s: State) {
   const params = new URLSearchParams();
   if (s.tab !== "overview") params.set("tab", s.tab);
   if (s.grain !== "month") params.set("grain", s.grain);
-  if (s.scope !== "ALL") params.set("scope", s.scope);
-  const q = params.toString();
+  const q = [params.toString(), s.filters].filter(Boolean).join("&");
   return q ? `/?${q}` : "/";
 }
 
@@ -61,6 +63,19 @@ function grainOptions(state: State) {
   ];
 }
 
+const STAGE_NAME = { offline: "Offline", tr: "TR", both: "Offline and TR" } as const;
+
+/** Greyed card for a metric whose source data doesn't exist yet. */
+function PendingKpi({ label, needs }: { label: string; needs: string }) {
+  return (
+    <div className="flex flex-col gap-3 bg-muted/40 p-5 text-muted-foreground">
+      <span className="text-sm">{label}</span>
+      <div className="font-serif text-3xl text-muted-foreground/50">—</div>
+      <span className="w-fit rounded border border-dashed px-1.5 py-0.5 text-xs">{needs}</span>
+    </div>
+  );
+}
+
 const CHIP = {
   green: "bg-chip-green text-primary",
   blue: "bg-chip-blue text-online-text",
@@ -69,7 +84,7 @@ const CHIP = {
 
 function Kpi({ label, value, sub, icon: Icon, chip }: { label: string; value: string; sub: string; icon: typeof Users; chip: keyof typeof CHIP }) {
   return (
-    <div className="flex flex-col gap-3 p-5">
+    <div className="flex flex-col gap-3 bg-card p-5">
       <div className="flex items-start justify-between gap-2">
         <span className="text-sm text-muted-foreground">{label}</span>
         <span className={cn("flex size-8 shrink-0 items-center justify-center rounded-md", CHIP[chip])}>
@@ -82,7 +97,7 @@ function Kpi({ label, value, sub, icon: Icon, chip }: { label: string; value: st
   );
 }
 
-function Shell({ state, runId, children }: { state: State; runId?: string; children: React.ReactNode }) {
+function Shell({ state, runId, bar, children }: { state: State; runId?: string; bar?: React.ReactNode; children: React.ReactNode }) {
   const hrefs = Object.fromEntries(TABS.map((t) => [t.key, href({ ...state, tab: t.key })])) as Record<Tab, string>;
   return (
     <SidebarProvider>
@@ -104,7 +119,10 @@ function Shell({ state, runId, children }: { state: State; runId?: string; child
             )}
           </div>
         </header>
-        <div className="flex w-full flex-1 flex-col gap-6 px-4 py-6 md:px-6 lg:px-8 lg:py-8 2xl:px-12">{children}</div>
+        <div className="flex w-full flex-1 flex-col gap-6 px-4 py-6 md:px-6 lg:px-8 lg:py-8 2xl:px-12">
+          {bar}
+          {children}
+        </div>
       </SidebarInset>
     </SidebarProvider>
   );
@@ -143,17 +161,20 @@ async function Dashboard({ searchParams }: { searchParams: Promise<SP> }) {
   const sp = await searchParams;
   const tab: Tab = TABS.some((t) => t.key === sp.tab) ? (sp.tab as Tab) : "overview";
   const grain: Grain = sp.grain === "week" ? "week" : "month";
-  const scopeParam = typeof sp.scope === "string" ? sp.scope : "ALL";
-  const scope = scopeParam in COMPETENCIES ? scopeParam : "ALL";
-  const state: State = { tab, grain, scope, user: me.username };
+  const fq = new URLSearchParams();
+  for (const k of FILTER_KEYS) {
+    const v = sp[k];
+    if (typeof v === "string" && v) fq.set(k, v);
+  }
+  const state: State = { tab, grain, filters: fq.toString(), user: me.username };
 
-  const [latest, periods, splits] = await Promise.all([
+  const [latest, ov, splits] = await Promise.all([
     getLatestMetrics(),
-    tab === "overview" ? getPeriods(grain, scope) : Promise.resolve([] as PeriodRow[]),
-    tab === "overview" ? Promise.resolve(null) : getSplits(grain),
+    getOverview(grain, state.filters), // also gives the filter bar its options
+    tab === "overview" ? Promise.resolve(null) : getSplits(grain, state.filters),
   ]);
 
-  if (!latest) {
+  if (!latest || !ov) {
     return (
       <Shell state={state}>
         <Hero state={state} />
@@ -166,12 +187,13 @@ async function Dashboard({ searchParams }: { searchParams: Promise<SP> }) {
     );
   }
 
-  const { run, competencies: comps, eventStatus: statuses, issues } = latest;
-  const compsWithData = comps.filter((c) => c.attempted > 0);
+  const { run, eventStatus: statuses, issues } = latest;
+  const f = ov.filters;
+  const bar = <GlobalFilters query={href(state).slice(2)} filters={f} options={ov.options} compNames={COMPETENCIES} />;
 
   if (tab === "splits") {
     return (
-      <Shell state={state} runId={run.runId}>
+      <Shell state={state} runId={run.runId} bar={bar}>
         <Hero state={state} runAt={run.runAt} />
         {splits && <PeriodSplitTable split={splits.period} action={<SegmentedNav label="Grain" value={grain} options={grainOptions(state)} />} />}
       </Shell>
@@ -180,15 +202,13 @@ async function Dashboard({ searchParams }: { searchParams: Promise<SP> }) {
 
   if (tab === "yog") {
     return (
-      <Shell state={state} runId={run.runId}>
+      <Shell state={state} runId={run.runId} bar={bar}>
         <Hero state={state} runAt={run.runAt} />
         {splits && (
           <>
-            <div className="grid gap-6 xl:grid-cols-[minmax(320px,1fr)_minmax(0,2fr)]">
-              <ModeBenchmark split={splits.overall} index="01" />
-              <OverallModeCard split={splits.overall} index="02" />
-            </div>
-            <YogCohortSplits groups={splits.yog} index="03" />
+            <ModeBenchmark split={splits.overall} modes={splits.modes} index="01" />
+            <OverallModeCard split={splits.overall} modes={splits.modes} index="02" trCount={splits.trCount} />
+            <YogCohortSplits groups={splits.yog} modes={splits.modes} index="03" />
           </>
         )}
       </Shell>
@@ -197,32 +217,36 @@ async function Dashboard({ searchParams }: { searchParams: Promise<SP> }) {
 
   if (tab === "competency") {
     return (
-      <Shell state={state} runId={run.runId}>
+      <Shell state={state} runId={run.runId} bar={bar}>
         <Hero state={state} runAt={run.runAt} />
         <Card className="rounded-lg">
           <CardHeader>
             <div className="eyebrow">01 — Skill breakdown</div>
             <CardTitle className="font-serif text-2xl font-normal">Outcomes by competency</CardTitle>
-            <CardDescription>Share of attempted students who cleared, by competency (online and offline combined).</CardDescription>
+            <CardDescription>
+              Share of attempted students who cleared, by competency, for the selected modes ({f.modes.join(" + ")}). Reattempt % = students with 2+
+              attempts ÷ students attempted.
+            </CardDescription>
           </CardHeader>
           <CardContent>
             <ul className="grid gap-x-10 gap-y-5 md:grid-cols-2 2xl:grid-cols-3">
-              {compsWithData.map((c) => {
-                const pct = c.attempted ? (100 * c.cleared) / c.attempted : 0;
+              {ov.byCompetency.map((c) => {
+                const pct = c.clearancePct ?? 0;
                 return (
                   <li key={c.competency}>
                     <div className="flex items-baseline justify-between gap-2">
                       <span className="min-w-0 truncate text-sm">
                         <span className="font-mono text-xs text-muted-foreground">{c.competency}</span> <span className="font-medium">{COMPETENCIES[c.competency]}</span>
                       </span>
-                      <span className="font-serif text-xl tabular-nums">{pct.toFixed(1)}%</span>
+                      <span className="font-serif text-xl tabular-nums">{fmtPct(c.clearancePct)}</span>
                     </div>
                     <div className="mt-1.5 h-2 w-full overflow-hidden rounded-full bg-muted">
                       <div className="h-full rounded-full bg-chart-2" style={{ width: `${pct}%` }} />
                     </div>
                     <div className="mt-1 text-xs tabular-nums text-muted-foreground">
-                      {c.cleared.toLocaleString()} cleared / {c.attempted.toLocaleString()} attempted
-                      {c.unevaluable > 0 && ` · ${c.unevaluable} unevaluable`}
+                      {c.cleared.toLocaleString()} cleared / {c.attempted.toLocaleString()} attempted · Reattempt {fmtPct(c.reattemptPct)} (
+                      {c.reattempted.toLocaleString()})
+                      {c.unevaluableRows > 0 && ` · ${c.unevaluableRows} unevaluable ${f.unevaluable ? "included" : "excluded"}`}
                     </div>
                   </li>
                 );
@@ -230,105 +254,52 @@ async function Dashboard({ searchParams }: { searchParams: Promise<SP> }) {
             </ul>
           </CardContent>
         </Card>
-        {splits && <OverallModeCard split={splits.overall} index="02" />}
+        {splits && <OverallModeCard split={splits.overall} modes={splits.modes} index="02" trCount={splits.trCount} />}
       </Shell>
     );
   }
 
-  // Overview
-  const points = periods.map(toPoint);
-  const scopeName = scope === "ALL" ? "All competencies" : `${scope} ${COMPETENCIES[scope]}`;
-  const range = points.length ? `${points[0].full} — ${points[points.length - 1].full} · ${scopeName}` : scopeName;
-  const scopeOptions = [
-    { value: "ALL", label: "All competencies", href: href({ ...state, scope: "ALL" }) },
-    ...compsWithData.map((c) => ({ value: c.competency, label: `${c.competency} ${COMPETENCIES[c.competency]}`, href: href({ ...state, scope: c.competency }) })),
-  ];
-
-  return (
-    <Shell state={state} runId={run.runId}>
-      <Hero
-        state={state}
-        runAt={run.runAt}
-        controls={
-          <>
-            <SelectNav label="Scope" value={scope} options={scopeOptions} />
-            <SegmentedNav label="Grain" value={grain} options={grainOptions(state)} />
-          </>
-        }
-      />
-
-      <Card className="gap-0 rounded-lg py-0">
-        <div className="grid grid-cols-1 divide-y sm:grid-cols-2 sm:divide-x xl:grid-cols-4 xl:divide-y-0 [&>*:nth-child(2)]:sm:border-r-0 xl:[&>*:nth-child(2)]:border-r">
-          <Kpi label="Students attempted" value={run.attemptedStudents.toLocaleString()} sub="Across all FT competencies" icon={Users} chip="green" />
-          <Kpi label="Cleared the bar" value={fmtPct(run.clearancePct)} sub={`${run.clearedStudents.toLocaleString()} students cleared at least one competency`} icon={BadgeCheck} chip="green" />
-          <Kpi
-            label="Mean re-attempts"
-            value={run.reattemptMean === null ? "n/a" : run.reattemptMean.toFixed(2)}
-            sub={`Median ${run.reattemptMedian ?? "n/a"} re-attempts before clearing`}
-            icon={RefreshCw}
-            chip="blue"
-          />
-          <Kpi
-            label="Events read"
-            value={`${run.eventsRead} / ${run.eventsInScope}`}
-            sub={`${run.unevaluableAttemptRows.toLocaleString()} attempts unevaluable (blank scores)`}
-            icon={AlertTriangle}
-            chip="amber"
-          />
-        </div>
-      </Card>
-
-      <ClearanceTrendChart
-        key={`${grain}-${scope}`}
-        points={points}
-        index="01"
-        title={grain === "month" ? "Monthly progress" : "Weekly progress"}
-        range={range}
-        splitsHref={href({ ...state, tab: "splits" })}
-      />
-
-      <div className="grid gap-6 xl:grid-cols-[minmax(0,3fr)_minmax(320px,2fr)]">
-        <Card className="gap-0 rounded-lg py-0">
-          <CardHeader className="border-b py-5">
-            <div className="eyebrow">02 — Table view</div>
-            <CardTitle className="font-serif text-2xl font-normal">{grain === "month" ? "By month" : "By week"}</CardTitle>
-            <CardDescription>{scopeName}. A student counts once per period.</CardDescription>
-          </CardHeader>
-          <div className="max-h-[420px] overflow-auto">
-            <Table className="tabular">
-              <TableHeader className="sticky top-0 z-10 bg-muted">
-                <TableRow className="hover:bg-transparent">
-                  <TableHead className="pl-5">{grain === "month" ? "Month" : "Week"}</TableHead>
-                  <TableHead className="text-right">Attempted</TableHead>
-                  <TableHead className="text-right">Cleared</TableHead>
-                  <TableHead className="pr-5 text-right">Clearance</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody className="font-mono">
-                {points.map((p) => (
-                  <TableRow key={p.full}>
-                    <TableCell className="pl-5 font-sans">{p.full}</TableCell>
-                    <TableCell className="text-right">{p.attempted.toLocaleString()}</TableCell>
-                    <TableCell className="text-right">{p.cleared.toLocaleString()}</TableCell>
-                    <TableCell className="pr-5 text-right font-medium">{fmtPct(p.pct)}</TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
+  if (tab === "health") {
+    return (
+      <Shell state={state} runId={run.runId} bar={bar}>
+        <Hero state={state} runAt={run.runAt} />
+        <Card className="gap-0 overflow-hidden rounded-lg py-0">
+          <div className="grid grid-cols-1 gap-px bg-border sm:grid-cols-2 xl:grid-cols-4">
+            <Kpi
+              label="Latest run"
+              value={run.runId.slice(0, 8)}
+              sub={`${new Date(run.runAt).toLocaleString("en-IN", { day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" })} · ${run.runId}`}
+              icon={Database}
+              chip="green"
+            />
+            <Kpi label="Events read" value={`${run.eventsRead} / ${run.eventsInScope}`} sub="Exam events in scope whose results sheet was read" icon={Activity} chip="green" />
+            <Kpi
+              label="Unevaluable (current filters)"
+              value={ov.unevaluable.rows.toLocaleString()}
+              sub={`attempts from ${ov.unevaluable.students.toLocaleString()} students · ${f.unevaluable ? "included as not cleared" : "left out of every denominator"}`}
+              icon={AlertTriangle}
+              chip="amber"
+            />
+            <Kpi
+              label="Unevaluable (whole run)"
+              value={run.unevaluableAttemptRows.toLocaleString()}
+              sub="All modes, no filters: blank gated score or no cutoff for the attempt date"
+              icon={AlertTriangle}
+              chip="amber"
+            />
           </div>
         </Card>
-
         <Card className="rounded-lg">
           <CardHeader>
-            <div className="eyebrow">03 — Data coverage</div>
+            <div className="eyebrow">01 — Data coverage</div>
             <CardTitle className="font-serif text-2xl font-normal">Sources</CardTitle>
-            <CardDescription>Exam events from the competency tracker.</CardDescription>
+            <CardDescription>Exam events from the competency tracker. Not affected by the filters.</CardDescription>
           </CardHeader>
           <CardContent className="flex flex-col gap-4">
             <div className="flex flex-wrap gap-2">
-              {statuses.map((s) => (
-                <Badge key={s.status} variant={s.status === "Read" ? "default" : "outline"} className="h-6 gap-1.5 px-2.5">
-                  {s.status} <span className="font-mono">{s.count}</span>
+              {statuses.map((st) => (
+                <Badge key={st.status} variant={st.status === "Read" ? "default" : "outline"} className="h-6 gap-1.5 px-2.5">
+                  {st.status} <span className="font-mono">{st.count}</span>
                 </Badge>
               ))}
             </div>
@@ -352,7 +323,99 @@ async function Dashboard({ searchParams }: { searchParams: Promise<SP> }) {
             </p>
           </CardContent>
         </Card>
-      </div>
+      </Shell>
+    );
+  }
+
+  // Overview
+  const points = ov.periods.map(toPoint);
+  const compName = f.comps.length === ov.options.competencies.length ? "All competencies" : f.comps.join(", ");
+  const scopeName = `${compName} · ${f.modes.join(" + ")}`;
+  const r = ov.reattempts;
+  const num = (v: number | null) => (v === null ? "n/a" : v.toFixed(2));
+  const stage = STAGE_NAME[ov.settings.clearanceStage];
+  const trendScope = `${compName} · ${stage} stage`;
+  const range = points.length ? `${points[0].full} — ${points[points.length - 1].full} · ${trendScope}` : trendScope;
+  const a = ov.assessment;
+
+  return (
+    <Shell state={state} runId={run.runId} bar={bar}>
+      <Hero state={state} runAt={run.runAt} controls={<SegmentedNav label="Grain" value={grain} options={grainOptions(state)} />} />
+
+      <Card className="gap-0 overflow-hidden rounded-lg py-0">
+        <div className="grid grid-cols-1 gap-px bg-border sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
+          <Kpi
+            label="Students attempted"
+            value={ov.attemptedStudents.toLocaleString()}
+            sub={`${scopeName} · unevaluable ${f.unevaluable ? "included" : "excluded"}`}
+            icon={Users}
+            chip="green"
+          />
+          <Kpi
+            label="Assessment clearance %"
+            value={fmtPct(a.clearancePct)}
+            sub={
+              a.attempted
+                ? `Stage: ${stage} cleared · ${a.cleared.toLocaleString()} / ${a.attempted.toLocaleString()} students who attempted ${stage}`
+                : `Stage: ${stage} cleared · ${stage} is not in the Mode filter`
+            }
+            icon={BadgeCheck}
+            chip="green"
+          />
+          <Kpi
+            label="Reattempt %"
+            value={fmtPct(ov.reattemptPct)}
+            sub={`${ov.reattemptedStudents.toLocaleString()} students with 2+ attempts in a competency ÷ students attempted`}
+            icon={Repeat}
+            chip="blue"
+          />
+          <Kpi
+            label="Median re-attempts to clear"
+            value={r.toClear.median === null ? "n/a" : String(r.toClear.median)}
+            sub={`Mean ${num(r.toClear.mean)} (${r.toClear.pairs.toLocaleString()} cleared pairs) · attempts so far: median ${r.soFar.median ?? "n/a"}, mean ${num(r.soFar.mean)}`}
+            icon={RefreshCw}
+            chip="blue"
+          />
+          <Kpi
+            label="Unevaluable"
+            value={ov.unevaluable.rows.toLocaleString()}
+            sub={`attempts from ${ov.unevaluable.students.toLocaleString()} students · ${f.unevaluable ? "included as not cleared" : "left out of every denominator"}`}
+            icon={AlertTriangle}
+            chip="amber"
+          />
+        </div>
+        <div className="grid grid-cols-1 gap-px border-t bg-border sm:grid-cols-3 xl:grid-cols-6">
+          <PendingKpi label="Pool → Placed % (FT)" needs="Needs placement data" />
+          <PendingKpi label="FT (active)" needs="Needs placement data" />
+          <PendingKpi label="Intern" needs="Needs placement data" />
+          <PendingKpi label="Intern (active)" needs="Needs placement data" />
+          <PendingKpi label="Internship clearance %" needs="Needs IRP data" />
+          <PendingKpi label="NPS" needs="Needs survey data" />
+        </div>
+      </Card>
+
+      <StageFunnel funnel={ov.funnel} poolEntry={ov.settings.poolEntryStage} online={f.online} index="01" />
+
+      <ClearanceTrendChart
+        key={`${grain}-${state.filters}`}
+        points={points}
+        index="02"
+        title={`${grain === "month" ? "Monthly" : "Weekly"} ${stage} clearance`}
+        range={range}
+        splitsHref={href({ ...state, tab: "splits" })}
+      />
+
+      <CompetencyClearanceChart
+        index="03"
+        stage={`${stage} cleared`}
+        bars={ov.funnel.byCompetency.map((c) => ({
+          competency: c.competency,
+          name: COMPETENCIES[c.competency],
+          attempted: c.assessment.attempted,
+          cleared: c.assessment.cleared,
+          pct: c.assessment.clearancePct,
+        }))}
+      />
     </Shell>
   );
 }

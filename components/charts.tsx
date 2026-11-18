@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { ArrowRight, ArrowUpRight } from "lucide-react";
-import { Bar, CartesianGrid, ComposedChart, Line, XAxis, YAxis } from "recharts";
+import { Bar, BarChart, CartesianGrid, ComposedChart, Line, XAxis, YAxis } from "recharts";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import { ChartContainer, ChartLegend, ChartLegendContent, ChartTooltip, ChartTooltipContent, type ChartConfig } from "@/components/ui/chart";
 
@@ -116,6 +116,59 @@ export function ClearanceTrendChart({
           Inspect competency &amp; mode splits <ArrowRight className="size-4" />
         </Link>
       </CardFooter>
+    </Card>
+  );
+}
+
+export type CompetencyBar = { competency: string; name: string; attempted: number; cleared: number; pct: number | null };
+
+const barConfig = { pct: { label: "Assessment clearance", color: "var(--chart-2)" } } satisfies ChartConfig;
+
+/** Assessment clearance % per competency (one series, 0-100%). */
+export function CompetencyClearanceChart({ bars, index, stage }: { bars: CompetencyBar[]; index: string; stage: string }) {
+  const data = bars.filter((b) => b.attempted > 0);
+  return (
+    <Card className="gap-4 rounded-lg">
+      <CardHeader>
+        <div className="eyebrow">{index} — By competency</div>
+        <CardTitle className="font-serif text-2xl font-normal">Assessment clearance % by competency</CardTitle>
+        <CardDescription>
+          {stage} students ÷ students who attempted that stage, per competency. Competencies with no attempts at that stage are left out.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="px-2 sm:px-4">
+        {data.length === 0 ? (
+          <p className="px-2 text-sm text-muted-foreground">No data for this selection.</p>
+        ) : (
+          <ChartContainer config={barConfig} className="aspect-auto h-[280px] w-full">
+            <BarChart data={data} margin={{ top: 8, right: 4, left: 4, bottom: 0 }} barCategoryGap="30%">
+              <CartesianGrid vertical={false} strokeDasharray="3 4" stroke="var(--grid)" />
+              <XAxis dataKey="competency" tickLine={false} axisLine={false} tickMargin={10} />
+              <YAxis domain={[0, 100]} ticks={[0, 25, 50, 75, 100]} tickLine={false} axisLine={false} width={44} tickFormatter={(v) => `${v}%`} />
+              <ChartTooltip
+                cursor={{ fill: "var(--muted)", opacity: 0.6 }}
+                content={
+                  <ChartTooltipContent
+                    labelFormatter={(_, payload) => {
+                      const p = payload?.[0]?.payload as CompetencyBar | undefined;
+                      return p ? `${p.competency} ${p.name}` : "";
+                    }}
+                    formatter={(_value, _name, item) => {
+                      const p = item.payload as CompetencyBar;
+                      return (
+                        <span className="font-mono tabular-nums">
+                          {p.pct === null ? "n/a" : `${p.pct.toFixed(1)}%`} · {p.cleared.toLocaleString()} / {p.attempted.toLocaleString()}
+                        </span>
+                      );
+                    }}
+                  />
+                }
+              />
+              <Bar dataKey="pct" fill="var(--color-pct)" radius={[4, 4, 0, 0]} maxBarSize={56} />
+            </BarChart>
+          </ChartContainer>
+        )}
+      </CardContent>
     </Card>
   );
 }

@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { BarChart3, GraduationCap, Layers, LayoutDashboard, LogOut, Table2, UserRound } from "lucide-react";
+import { BarChart3, GraduationCap, Layers, LayoutDashboard, LogOut, Table2, UserRound, Activity } from "lucide-react";
 import { useSignOut } from "@/components/auth-forms";
 import {
   Sidebar,
@@ -25,6 +25,7 @@ const ICONS: Record<Tab, typeof LayoutDashboard> = {
   splits: Table2,
   yog: GraduationCap,
   competency: BarChart3,
+  health: Activity,
 };
 
 export function AppSidebar({ active, hrefs, user }: { active: Tab; hrefs: Record<Tab, string>; user: string }) {
@@ -71,7 +72,7 @@ export function AppSidebar({ active, hrefs, user }: { active: Tab; hrefs: Record
       </SidebarContent>
       <SidebarFooter className="border-t">
         <p className="px-2 text-xs text-muted-foreground group-data-[collapsible=icon]:hidden">
-          Online + offline. TR and internships coming next.
+          Online, offline and TR. Internships coming next.
         </p>
         <SidebarMenu>
           <SidebarMenuItem>

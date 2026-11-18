@@ -20,6 +20,7 @@ import {
 } from "./competency";
 import { COMPETENCIES, type CompetencyId } from "./config";
 import { persistRun, type EventRow } from "./store";
+import { loadTr } from "./tr";
 
 const OUT_DIR = join(process.cwd(), "output");
 const YOG_FILE = join(process.cwd(), "data", "user_yog.csv"); // export with columns user_id,YOG
@@ -121,6 +122,18 @@ export async function runPipeline(opts: RunOptions = {}) {
     studentsWithYog: new Set(attempts.filter((a) => a.yog).map((a) => a.candidateId)).size,
     studentsWithoutYog: new Set(attempts.filter((a) => !a.yog).map((a) => a.candidateId)).size,
   };
+  const tr = await loadTr(!!opts.refresh, log);
+  for (const t of tr.interviews) t.yog = yogMap.get(t.candidateId) ?? null;
+  const trAttempted = tr.interviews.filter((t) => t.attempted);
+  const trCoverage = {
+    tabs: tr.tabs,
+    interviews: tr.interviews.length,
+    attemptedInterviews: trAttempted.length,
+    clearedInterviews: trAttempted.filter((t) => t.cleared).length,
+    clearedButNotAttempted: tr.interviews.filter((t) => t.cleared && !t.attempted).length,
+    studentsWithoutYog: new Set(trAttempted.filter((t) => !t.yog).map((t) => t.candidateId)).size,
+  };
+  log(`TR: ${trCoverage.attemptedInterviews} attempted interviews, ${trCoverage.clearedInterviews} cleared`);
   const metrics = aggregate(attempts);
   const students = studentTable(attempts);
   const periods = periodMatrix(attempts);
@@ -135,7 +148,7 @@ export async function runPipeline(opts: RunOptions = {}) {
     outOfScope: eventRows.filter((e) => e.status === "Out of scope").length,
   };
   const summaryMd = summaryMarkdown(metrics, checks, cov);
-  const report = { gaps, checks, cleaning: stats, coverage: cov, yog: yogCoverage, eventsInScope: cov.inScope, eventsRead: cov.read };
+  const report = { gaps, checks, cleaning: stats, coverage: cov, yog: yogCoverage, tr: trCoverage, eventsInScope: cov.inScope, eventsRead: cov.read };
 
   // Audit files (candidate_id only; no names or phone numbers)
   await mkdir(OUT_DIR, { recursive: true });
@@ -166,10 +179,17 @@ export async function runPipeline(opts: RunOptions = {}) {
     }))
   );
   await Bun.write(join(OUT_DIR, "periodic_matrix.csv"), csv(periods as unknown as Record<string, unknown>[]));
+  await Bun.write(
+    join(OUT_DIR, "tr_interviews.csv"),
+    csv(tr.interviews.map((t) => ({
+      candidate_id: t.candidateId, competency: t.competency, tab: t.tab, interview_on: t.day, status: t.status,
+      attempted: t.attempted ? "Y" : "N", cleared: t.cleared ? "Y" : "N", level: t.level ?? "",
+    })))
+  );
   await Bun.write(join(OUT_DIR, "events.csv"), csv(eventRows as unknown as Record<string, unknown>[]));
 
   let runId: string | null = null;
-  if (opts.persist !== false) runId = await persistRun({ metrics, events: eventRows, attempts, periods, students, summaryMd, report });
+  if (opts.persist !== false) runId = await persistRun({ metrics, events: eventRows, attempts, periods, students, tr: tr.interviews, summaryMd, report });
 
   return { runId, metrics, checks, coverage: cov, cleaning: stats, summaryMd };
 }

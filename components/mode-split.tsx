@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import type { Splits } from "@/lib/api";
+import type { Splits, TrLevels } from "@/lib/api";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -10,21 +10,40 @@ import { cn } from "@/lib/utils";
 type Row = Splits["overall"]["rows"][number];
 type YogGroup = Splits["yog"][number];
 
-const MODES = ["Online", "Offline"] as const;
-const BAR = { Online: "bg-online", Offline: "bg-offline" };
-const TEXT = { Online: "text-online-text", Offline: "text-offline-text" };
+type Mode = "Online" | "Offline" | "TR";
+const BAR: Record<Mode, string> = { Online: "bg-online", Offline: "bg-offline", TR: "bg-tr" };
+const TEXT: Record<Mode, string> = { Online: "text-online-text", Offline: "text-offline-text", TR: "text-tr-text" };
+const HEAD: Record<Mode, string> = { Online: "Online mode", Offline: "Offline mode", TR: "TR (technical round)" };
 
 const n = (v: number) => v.toLocaleString();
 const pct = (v: number | null, d = 2) => (v === null ? "—" : `${v.toFixed(d)}%`);
 const delta = (r: Row) => {
-  const on = r.modes.Online.clearPct;
-  const off = r.modes.Offline.clearPct;
+  const on = r.modes.Online?.clearPct ?? null;
+  const off = r.modes.Offline?.clearPct ?? null;
   return on === null || off === null ? null : Math.round((on - off) * 10) / 10;
 };
 
-/** Competency x (Online, Offline) attempted / cleared / clear %, plus Online − Offline in percentage points. */
-export function ModeTable({ rows, total }: { rows: Row[]; total: Row }) {
+function LevelChips({ levels }: { levels: TrLevels["levels"] }) {
+  if (!levels.length) return <span className="text-muted-foreground/60">—</span>;
+  return (
+    <div className="flex flex-wrap gap-1">
+      {levels.map((l) => (
+        <span key={l.level} className="whitespace-nowrap rounded bg-muted px-1.5 py-0.5 text-xs">
+          {l.level} <span className="font-semibold">{l.count}</span>
+        </span>
+      ))}
+    </div>
+  );
+}
+
+/**
+ * Competency x (Online, Offline, TR) attempted / cleared / clear %, plus Online − Offline in
+ * percentage points, and optionally the level split of TR-cleared students.
+ */
+export function ModeTable({ rows, total, levels, modes }: { rows: Row[]; total: Row; levels?: TrLevels[]; modes: string[] }) {
   const sep = "border-l";
+  const MODES = modes as Mode[];
+  const showDelta = modes.includes("Online") && modes.includes("Offline");
   return (
     <Table className="tabular">
       <TableHeader className="bg-muted/50">
@@ -32,10 +51,15 @@ export function ModeTable({ rows, total }: { rows: Row[]; total: Row }) {
           <TableHead rowSpan={2} className="sticky left-0 z-10 bg-muted pl-5 align-bottom">Competency</TableHead>
           {MODES.map((m) => (
             <TableHead key={m} colSpan={3} className={cn(sep, "h-9 text-center font-semibold", TEXT[m])}>
-              {m} mode
+              {HEAD[m]}
             </TableHead>
           ))}
-          <TableHead rowSpan={2} className={cn(sep, "pr-5 text-right align-bottom")}>Online − Offline</TableHead>
+          {levels && (
+            <TableHead rowSpan={2} className={cn(sep, "min-w-56 align-bottom text-tr-text")}>
+              TR cleared, by level
+            </TableHead>
+          )}
+          {showDelta && <TableHead rowSpan={2} className={cn(sep, "pr-5 text-right align-bottom")}>Online − Offline</TableHead>}
         </TableRow>
         <TableRow className="hover:bg-transparent">
           {MODES.flatMap((m) => [
@@ -61,9 +85,16 @@ export function ModeTable({ rows, total }: { rows: Row[]; total: Row }) {
                   <TableCell key={`${m}-p`} className={cn("text-right font-medium", TEXT[m])}>{pct(c.clearPct)}</TableCell>,
                 ];
               })}
-              <TableCell className={cn(sep, "pr-5 text-right", d === null ? "text-muted-foreground/60" : d >= 0 ? "text-positive" : "text-negative")}>
-                {d === null ? "—" : `${d >= 0 ? "+" : ""}${d.toFixed(1)}pp`}
-              </TableCell>
+              {levels && (
+                <TableCell className={cn(sep, "font-sans")}>
+                  {isTotal ? null : <LevelChips levels={levels.find((l) => l.competency === r.competency)?.levels ?? []} />}
+                </TableCell>
+              )}
+              {showDelta && (
+                <TableCell className={cn(sep, "pr-5 text-right", d === null ? "text-muted-foreground/60" : d >= 0 ? "text-positive" : "text-negative")}>
+                  {d === null ? "—" : `${d >= 0 ? "+" : ""}${d.toFixed(1)}pp`}
+                </TableCell>
+              )}
             </TableRow>
           );
         })}
@@ -80,10 +111,10 @@ function Meter({ value, className, thick }: { value: number | null; className: s
   );
 }
 
-function Legend() {
+function Legend({ modes }: { modes: Mode[] }) {
   return (
     <div className="flex gap-4 text-xs text-muted-foreground">
-      {MODES.map((m) => (
+      {modes.map((m) => (
         <span key={m} className="flex items-center gap-1.5">
           <span className={cn("size-2.5 rounded-[2px]", BAR[m])} />
           {m}
@@ -93,23 +124,24 @@ function Legend() {
   );
 }
 
-/** Online vs offline clearance: totals, then each competency as a pair of bars. */
-export function ModeBenchmark({ split, index = "01" }: { split: Splits["overall"]; index?: string }) {
+/** Online vs offline vs TR clearance: totals, then each competency as a group of bars. */
+export function ModeBenchmark({ split, modes, index = "01" }: { split: Splits["overall"]; modes: string[]; index?: string }) {
+  const MODES = modes as Mode[];
   return (
     <Card className="rounded-lg">
       <CardHeader>
         <div className="eyebrow">{index} — Mode benchmark · as of {split.asOf ?? "n/a"}</div>
-        <CardTitle className="font-serif text-2xl font-normal">Online vs offline</CardTitle>
-        <CardDescription>Cumulative attempts across all competencies, before YOG segmentation.</CardDescription>
+        <CardTitle className="font-serif text-2xl font-normal">Clearance by mode</CardTitle>
+        <CardDescription>Totals are unique students across the selected competencies, before YOG segmentation.</CardDescription>
       </CardHeader>
-      <CardContent className="flex flex-col gap-5">
+      <CardContent className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(0,2fr)] lg:gap-8">
         <div className="flex flex-col gap-3">
           {MODES.map((m) => {
             const c = split.total.modes[m];
             return (
               <div key={m}>
                 <div className="flex items-baseline justify-between gap-2">
-                  <span className={cn("text-sm font-medium", TEXT[m])}>{m} total</span>
+                  <span className={cn("text-sm font-medium", TEXT[m])}>{m} · unique students</span>
                   <span className="font-mono text-xs tabular-nums">
                     <span className="font-semibold">{pct(c.clearPct)}</span>{" "}
                     <span className="text-muted-foreground">({n(c.cleared)} / {n(c.attempted)})</span>
@@ -122,15 +154,15 @@ export function ModeBenchmark({ split, index = "01" }: { split: Splits["overall"
             );
           })}
         </div>
-        <div className="border-t pt-4">
+        <div className="border-t pt-4 lg:border-t-0 lg:border-l lg:pt-0 lg:pl-8">
           <div className="mb-3 flex items-center justify-between gap-2">
             <span className="eyebrow">Clearance % by competency</span>
-            <Legend />
+            <Legend modes={MODES} />
           </div>
           <ul className="flex flex-col gap-3">
             {split.rows.map((r) => (
               <li key={r.competency} className="grid grid-cols-[56px_1fr_40px] items-center gap-x-3 gap-y-1">
-                <span className="row-span-2 text-sm font-medium">{r.competency}</span>
+                <span className="text-sm font-medium" style={{ gridRow: `span ${MODES.length}` }}>{r.competency}</span>
                 {MODES.map((m) => [
                   <Meter key={`${m}-b`} value={r.modes[m].clearPct} className={BAR[m]} />,
                   <span key={`${m}-v`} className="text-right font-mono text-xs tabular-nums text-muted-foreground" aria-label={`${r.competency} ${m}`}>
@@ -147,21 +179,38 @@ export function ModeBenchmark({ split, index = "01" }: { split: Splits["overall"
 }
 
 /** Overall split by mode, as a card. */
-export function OverallModeCard({ split, index = "02" }: { split: Splits["overall"]; index?: string }) {
+export function OverallModeCard({
+  split,
+  modes,
+  index = "02",
+  trCount,
+}: {
+  split: Splits["overall"];
+  modes: string[];
+  index?: string;
+  trCount?: Splits["trCount"];
+}) {
   return (
     <Card className="gap-0 rounded-lg py-0">
       <CardHeader className="border-b py-5">
         <div className="eyebrow">{index} — Snapshot · as of {split.asOf ?? "n/a"}</div>
         <CardTitle className="font-serif text-2xl font-normal">Competency split by mode</CardTitle>
-        <CardDescription>Distinct students per competency and mode, across all cohorts.</CardDescription>
+        <CardDescription>
+          Distinct students per competency and mode. The Total row counts each student once across the selected competencies.
+          {trCount === "interviews" && " TR is counted per interview."}
+          {modes.includes("TR") && " TR levels are for TR-cleared students."}
+        </CardDescription>
       </CardHeader>
-      <ModeTable rows={split.rows} total={split.total} />
+      <ModeTable rows={split.rows} total={split.total} levels={modes.includes("TR") ? split.trLevels : undefined} modes={modes} />
     </Card>
   );
 }
 
 /** Pick a graduation cohort and see its online / offline split. */
-export function YogCohortSplits({ groups, index = "03" }: { groups: YogGroup[]; index?: string }) {
+const STRIP_COLS: Record<number, string> = { 3: "sm:grid-cols-3", 4: "sm:grid-cols-4", 5: "sm:grid-cols-5" };
+
+export function YogCohortSplits({ groups, modes, index = "03" }: { groups: YogGroup[]; modes: string[]; index?: string }) {
+  const MODES = modes as Mode[];
   const [yog, setYog] = useState(groups[0]?.yog ?? "");
   if (!groups.length) return null;
   const g = groups.find((x) => x.yog === yog) ?? groups[0];
@@ -173,7 +222,7 @@ export function YogCohortSplits({ groups, index = "03" }: { groups: YogGroup[]; 
         <div className="flex min-w-0 flex-col gap-1">
         <div className="eyebrow">{index} — Cohorts</div>
         <CardTitle className="font-serif text-2xl font-normal">Year of graduation splits</CardTitle>
-        <CardDescription>Pick a cohort to see its online and offline clearance. Students missing from the academy users file are Unknown.</CardDescription>
+        <CardDescription>Pick a cohort to see its online, offline and TR clearance. Students missing from the academy users file are Unknown.</CardDescription>
         </div>
         <div className="flex shrink-0 items-center gap-2">
           <span className="eyebrow">Cohort</span>
@@ -192,21 +241,20 @@ export function YogCohortSplits({ groups, index = "03" }: { groups: YogGroup[]; 
         </div>
       </CardHeader>
 
-      <div className="grid grid-cols-2 border-b sm:grid-cols-4">
+      <div className={cn("grid grid-cols-2 gap-px border-b bg-border", STRIP_COLS[2 + MODES.length])}>
         {[
-          { k: "Cohort", v: `YOG ${g.yog}`, cls: "" },
+          { k: "Cohort", v: `YOG ${g.yog}`, cls: "", span: "col-span-2 sm:col-span-1" },
           { k: "Students", v: n(g.students), cls: "font-mono" },
-          { k: "Online clearance", v: pct(g.total.modes.Online.clearPct), cls: cn("font-mono", TEXT.Online) },
-          { k: "Offline clearance", v: pct(g.total.modes.Offline.clearPct), cls: cn("font-mono", TEXT.Offline) },
-        ].map((s, i) => (
-          <div key={s.k} className={cn("px-5 py-3", i > 0 && "sm:border-l", i % 2 === 1 && "border-l", i >= 2 && "border-t sm:border-t-0")}>
+          ...MODES.map((m) => ({ k: `${m} clearance`, v: pct(g.total.modes[m]?.clearPct ?? null), cls: cn("font-mono", TEXT[m]) })),
+        ].map((s) => (
+          <div key={s.k} className={cn("bg-card px-5 py-3", "span" in s && s.span)}>
             <div className="eyebrow">{s.k}</div>
             <div className={cn("mt-0.5 text-lg font-semibold tabular-nums", s.cls)}>{s.v}</div>
           </div>
         ))}
       </div>
 
-      <ModeTable rows={g.rows} total={g.total} />
+      <ModeTable rows={g.rows} total={g.total} modes={modes} />
     </Card>
   );
 }

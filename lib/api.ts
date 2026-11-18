@@ -71,21 +71,76 @@ export async function getMe(): Promise<{ username: string } | null> {
 
 export const getLatestMetrics = () => get<LatestMetrics>("/api/metrics/latest");
 
-export async function getPeriods(grain: "month" | "week", scope: string): Promise<PeriodRow[]> {
-  const data = await get<{ rows: PeriodRow[] }>(`/api/periods?grain=${grain}&scope=${encodeURIComponent(scope)}`);
-  return data?.rows ?? [];
-}
+export type Filters = {
+  comps: string[];
+  yogs: string[];
+  modes: string[];
+  online: boolean;
+  from: string | null;
+  to: string | null;
+  attempt: "all" | "first" | "re";
+  unevaluable: boolean;
+  active: boolean;
+};
+export type FilterOptions = {
+  competencies: string[];
+  yogs: string[];
+  modes: string[];
+  minDay: string | null;
+  maxDay: string | null;
+  activeDays: number;
+  activeFrom: string | null;
+};
+type Counts = { attempted: number; cleared: number; clearancePct: number | null; reattempted: number; reattemptPct: number | null };
+type Stats = { mean: number | null; median: number | null; pairs: number };
+export type Overview = {
+  runId: string;
+  options: FilterOptions;
+  filters: Filters;
+  attemptedStudents: number;
+  clearedStudents: number;
+  clearancePct: number | null;
+  reattemptedStudents: number;
+  reattemptPct: number | null;
+  reattempts: { toClear: Stats; soFar: Stats };
+  unevaluable: { rows: number; students: number };
+  byCompetency: (Counts & { competency: string; unevaluableRows: number })[];
+  periods: Omit<PeriodRow, "scope">[];
+  settings: { clearanceStage: Stage; poolEntryStage: Stage };
+  assessment: StageClearance;
+  funnel: Funnel & { byCompetency: (Funnel & { competency: string; assessment: StageClearance })[] };
+};
+export type Stage = "offline" | "tr" | "both";
+export type StageClearance = { attempted: number; cleared: number; clearancePct: number | null };
+export type FunnelStage = {
+  mode: string;
+  step: "attempted" | "cleared";
+  count: number;
+  conversion: { num: number; den: number; pct: number | null } | null; // same-student, from the previous stage
+};
+export type Funnel = { stages: FunnelStage[]; offPath: Record<string, number> };
+
+/** Global filter keys kept in the URL (everything except tab and grain). */
+export const FILTER_KEYS = ["comps", "yogs", "modes", "online", "from", "to", "attempt", "unev", "active"] as const;
+
+/** Headline, trend and per-competency numbers for the global filters (a query string of FILTER_KEYS). */
+export const getOverview = (grain: "month" | "week", filters: string) =>
+  get<Overview>(`/api/overview?grain=${grain}${filters ? `&${filters}` : ""}`);
 
 export type PeriodColumn = { key: string; label: string };
 export type PeriodSplitRow = { competency: string; mode: string; stage: "Attempted" | "Qualified"; values: (number | null)[] };
 export type ModeCell = { attempted: number; cleared: number; clearPct: number | null };
 export type OverallRow = { competency: string; modes: Record<string, ModeCell> };
 export type YogGroup = { yog: string; students: number; rows: OverallRow[]; total: OverallRow };
+export type TrLevels = { competency: string; levels: { level: string; count: number }[] };
 export type Splits = {
   runId: string;
+  trCount: "students" | "interviews";
+  modes: string[];
   period: { grain: "month" | "week"; columns: PeriodColumn[]; rows: PeriodSplitRow[] };
-  overall: { asOf: string | null; rows: OverallRow[]; total: OverallRow };
+  overall: { asOf: string | null; rows: OverallRow[]; total: OverallRow; trLevels: TrLevels[] };
   yog: YogGroup[];
 };
 
-export const getSplits = (grain: "month" | "week") => get<Splits>(`/api/splits?grain=${grain}`);
+export const getSplits = (grain: "month" | "week", filters: string) =>
+  get<Splits>(`/api/splits?grain=${grain}${filters ? `&${filters}` : ""}`);

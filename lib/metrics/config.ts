@@ -157,3 +157,49 @@ export const TABS = {
   normal: ["Normal", "Normal link"],
   main: "Sheet1",
 };
+
+// ---------------------------------------------------------------- TR (technical round)
+// Source: the post-offline TR sheet, read with action=postOfflineData&subsheet=<tab>.
+// One row per interview. Other tabs (uploads, "incorrect data", AI&ML, Readme, Levels) are not read.
+export const TR_TABS: { competency: CompetencyId; tabs: string[] }[] = [
+  { competency: "C1", tabs: ["DSA 2.0 (current)", "DSA (discontinued)"] },
+  { competency: "C2", tabs: ["Frontend Development"] },
+  { competency: "C4", tabs: ["Backend Development"] },
+  { competency: "C3", tabs: ["SE Fundamentals"] },
+];
+/** Interview statuses that count as attempted (no_show and cancelled do not). */
+export const TR_ATTEMPTED_STATUSES = ["completed", "partially_completed"];
+/** Cleared = "Clearance Status" is exactly this. */
+export const TR_CLEARED_VALUE = "Cleared";
+/**
+ * How TR is counted in the splits:
+ *  "students"   distinct students per cell, same as online and offline (default)
+ *  "interviews" one per interview row, the way the team's TR sheet counts
+ */
+export const TR_COUNT: "students" | "interviews" = "students";
+
+/**
+ * "Active student" (ASSUMED, not confirmed by the team): a student with at least one attempt or
+ * TR interview, in any mode, in the last ACTIVE_DAYS days up to the latest date in the data.
+ * Applied only when the "Active students only" toggle is on.
+ */
+export const ACTIVE_DAYS = 30;
+
+/**
+ * Assessment stages. Intended path: Online -> Offline -> TR -> placement pool. Because of
+ * capacity, students currently enter the placement pool after clearing OFFLINE; TR is not a gate.
+ *   "offline" = cleared offline, "tr" = cleared TR, "both" = cleared offline and TR (same competency).
+ */
+export type Stage = "offline" | "tr" | "both";
+
+/**
+ * Stage that defines "assessment cleared" for the headline Assessment clearance %.
+ * "both" (not active): students who cleared offline AND TR in the same competency / students who attempted offline.
+ */
+export const CLEARANCE_STAGE: Stage = "offline";
+
+/**
+ * Stage after which a student enters the placement pool.
+ * The future placement TAT clock starts at the date the student cleared this stage.
+ */
+export const POOL_ENTRY_STAGE: Stage = "offline";

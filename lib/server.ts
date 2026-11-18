@@ -4,7 +4,9 @@
  *   GET  /api/health
  *   GET  /api/metrics/latest            headline + by-competency + coverage for the latest run
  *   GET  /api/periods?grain=&scope=     weekly / monthly matrix (grain: month|week, scope: ALL|C1..C7)
- *   GET  /api/splits?grain=             period split (month | week), overall split, YOG split (online / offline)
+ *   GET  /api/overview?grain=&<filters>  headline, trend and per-competency numbers for the global filters
+ *   GET  /api/splits?grain=&<filters>    period split (month | week), overall split, YOG split, TR levels
+ *        <filters>: comps, yogs, modes, online, from, to, attempt, unev, active (see lib/metrics/filters.ts)
  *   GET  /api/runs                      run history
  *   POST /api/refresh                   start a metrics run in the background ({ refresh?, refreshErrors? })
  *   GET  /api/refresh/status            state of the current / last run
@@ -17,9 +19,11 @@
  */
 import { Elysia, t } from "elysia";
 import { runPipeline } from "./metrics/pipeline";
-import { competencyBreakdown, eventIssues, eventStatus, latestRun, periods, runAttempts, runHistory } from "./metrics/store";
-import { overallSplit, periodSplit, yogSplit } from "./metrics/splits";
-import { COMPETENCIES } from "./metrics/config";
+import { competencyBreakdown, eventIssues, eventStatus, latestRun, periods, runHistory } from "./metrics/store";
+import { overallSplit, periodSplit, trLevelSplit, yogSplit } from "./metrics/splits";
+import { overview, stages } from "./metrics/overview";
+import { applyFilters, loadRows } from "./metrics/filters";
+import { COMPETENCIES, TR_COUNT } from "./metrics/config";
 import {
   SESSION_COOKIE,
   SESSION_DAYS,
@@ -62,6 +66,20 @@ function startRun(opts: { refresh?: boolean; refreshErrors?: boolean }) {
 }
 
 const scopes = ["ALL", ...Object.keys(COMPETENCIES)];
+
+
+const filterQuery = t.Object({
+  grain: t.Optional(t.Union([t.Literal("month"), t.Literal("week")])),
+  comps: t.Optional(t.String()),
+  yogs: t.Optional(t.String()),
+  modes: t.Optional(t.String()),
+  online: t.Optional(t.String()),
+  from: t.Optional(t.String()),
+  to: t.Optional(t.String()),
+  attempt: t.Optional(t.String()),
+  unev: t.Optional(t.String()),
+  active: t.Optional(t.String()),
+});
 
 const PUBLIC = new Set(["/api/health", "/api/auth/login"]);
 const tokenOf = (cookie: Record<string, { value?: unknown }>) => {
@@ -132,19 +150,44 @@ export const api = new Elysia({ prefix: "/api" })
     }
   )
   .get(
+    "/overview",
+    async ({ query, status }) => {
+      const run = await latestRun();
+      if (!run) return status(404, { error: "No metrics run yet." });
+      const { filters, options, rows, unevaluableRows } = applyFilters(await loadRows(run.runId), query);
+      return {
+        runId: run.runId,
+        options,
+        filters,
+        ...overview(rows, unevaluableRows, filters.comps, query.grain ?? "month"),
+        ...stages(rows, filters.comps, filters.modes),
+      };
+    },
+    { query: filterQuery }
+  )
+  .get(
     "/splits",
     async ({ query, status }) => {
       const run = await latestRun();
       if (!run) return status(404, { error: "No metrics run yet." });
-      const attempts = await runAttempts(run.runId);
+      const { filters, rows } = applyFilters(await loadRows(run.runId), query);
+      const { comps, modes } = filters;
+      // TR counted per student (same as online / offline) or per interview, see TR_COUNT in config.
+      const attempts = rows.map((r, i) => ({
+        ...r,
+        candidateId: r.mode === "TR" && TR_COUNT === "interviews" ? `${r.candidateId}#${i}` : r.candidateId,
+      }));
+      const tr = attempts.filter((r) => r.mode === "TR").map((r) => ({ ...r, cleared: !!r.qualified }));
       return {
         runId: run.runId,
-        period: periodSplit(attempts, query.grain ?? "month"),
-        overall: overallSplit(attempts),
-        yog: yogSplit(attempts),
+        trCount: TR_COUNT,
+        modes,
+        period: periodSplit(attempts, query.grain ?? "month", comps, modes),
+        overall: { ...overallSplit(attempts, comps, modes), trLevels: modes.includes("TR") ? trLevelSplit(tr, comps) : [] },
+        yog: yogSplit(attempts, comps, modes),
       };
     },
-    { query: t.Object({ grain: t.Optional(t.Union([t.Literal("month"), t.Literal("week")])) }) }
+    { query: filterQuery }
   )
   .get("/runs", () => runHistory())
   .post(

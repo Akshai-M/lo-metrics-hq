@@ -1,5 +1,5 @@
 /**
- * Report splits, computed from a run's attempt rows (online + offline; TR comes later).
+ * Report splits, computed from a run's attempt rows (online, offline and TR interviews).
  *
  *  - periodSplit:  competency x mode x stage (Attempted / Qualified) by period.
  *                  grain "month" = one column per month;
@@ -7,14 +7,19 @@
  *  - overallSplit: per competency, attempted / cleared / clear % for each mode, plus a total row.
  *  - yogSplit:     the overall split, per year of graduation.
  *
- * Counts are distinct students: a student counts once per cell.
+ *  - trLevels:     level-wise split of TR-cleared students, per competency.
+ *
+ * Counts are distinct candidateIds per cell. For TR counted per interview (TR_COUNT), the
+ * caller makes each interview's candidateId unique ("uid#n"); student counts strip the suffix.
+ * Only the chosen competencies (ids) and modes are returned. Total rows count unique students
+ * across the chosen competencies (not the sum of the rows).
  */
 import { weekBucket } from "./competency";
 
 export type SplitAttempt = {
   candidateId: string;
   competency: string;
-  mode: string; // "Online" | "Offline"
+  mode: string; // "Online" | "Offline" | "TR"
   day: string; // YYYY-MM-DD
   qualified: boolean | null;
   yog: string | null;
@@ -28,7 +33,7 @@ export const SPLIT_COMPETENCIES: { id: string; short: string }[] = [
   { id: "C3", short: "SE" },
   { id: "C7", short: "Gen AI" },
 ];
-export const SPLIT_MODES = ["Online", "Offline"] as const;
+export const SPLIT_MODES = ["Online", "Offline", "TR"] as const;
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
@@ -48,7 +53,7 @@ function columnFor(day: string, grain: "month" | "week", multiYear: boolean): Pe
   return { key: w.start, label: `${w.label}${suffix}` };
 }
 
-export function periodSplit(attempts: SplitAttempt[], grain: "month" | "week") {
+export function periodSplit(attempts: SplitAttempt[], grain: "month" | "week", comps: string[], modes: string[]) {
   if (!attempts.length) return { grain, columns: [] as PeriodColumn[], rows: [] as PeriodSplitRow[] };
   const days = attempts.map((a) => a.day).sort();
   const multiYear = days[0].slice(0, 4) !== days[days.length - 1].slice(0, 4);
@@ -70,8 +75,8 @@ export function periodSplit(attempts: SplitAttempt[], grain: "month" | "week") {
   const cols = [...columns.values()].sort((x, y) => (x.key < y.key ? -1 : 1));
 
   const rows: PeriodSplitRow[] = [];
-  for (const c of SPLIT_COMPETENCIES) {
-    for (const mode of SPLIT_MODES) {
+  for (const c of SPLIT_COMPETENCIES.filter((x) => comps.includes(x.id))) {
+    for (const mode of SPLIT_MODES.filter((m) => modes.includes(m))) {
       for (const stage of ["Attempted", "Qualified"] as const) {
         const src = stage === "Attempted" ? attempted : qualified;
         const values = cols.map((col) => {
@@ -91,49 +96,41 @@ export type OverallRow = { competency: string; modes: Record<string, ModeCell> }
 
 const pct = (n: number, d: number) => (d ? Math.round((10000 * n) / d) / 100 : null);
 
-function competencyRows(attempts: SplitAttempt[]) {
+function competencyRows(attempts: SplitAttempt[], comps: string[], modes: string[]) {
   const att = new Map<string, Set<string>>();
   const cle = new Map<string, Set<string>>();
+  const add = (map: Map<string, Set<string>>, k: string, id: string) => {
+    if (!map.has(k)) map.set(k, new Set());
+    map.get(k)!.add(id);
+  };
   for (const a of attempts) {
-    const k = `${a.competency}|${a.mode}`;
-    if (!att.has(k)) att.set(k, new Set());
-    att.get(k)!.add(a.candidateId);
-    if (a.qualified) {
-      if (!cle.has(k)) cle.set(k, new Set());
-      cle.get(k)!.add(a.candidateId);
+    // "*" = all chosen competencies together (Total row, unique students)
+    for (const c of [a.competency, "*"]) {
+      add(att, `${c}|${a.mode}`, a.candidateId);
+      if (a.qualified) add(cle, `${c}|${a.mode}`, a.candidateId);
     }
   }
-  const rows: OverallRow[] = SPLIT_COMPETENCIES.map((c) => ({
-    competency: c.short,
+  const row = (id: string, name: string): OverallRow => ({
+    competency: name,
     modes: Object.fromEntries(
-      SPLIT_MODES.map((m) => {
-        const a = att.get(`${c.id}|${m}`)?.size ?? 0;
-        const cl = cle.get(`${c.id}|${m}`)?.size ?? 0;
+      SPLIT_MODES.filter((m) => modes.includes(m)).map((m) => {
+        const a = att.get(`${id}|${m}`)?.size ?? 0;
+        const cl = cle.get(`${id}|${m}`)?.size ?? 0;
         return [m, { attempted: a, cleared: cl, clearPct: pct(cl, a) }];
       })
     ),
-  }));
-  // Total row: sums of the competency rows; clear % = total cleared / total attempted.
-  const total: OverallRow = {
-    competency: "Total",
-    modes: Object.fromEntries(
-      SPLIT_MODES.map((m) => {
-        const a = rows.reduce((s, r) => s + r.modes[m].attempted, 0);
-        const cl = rows.reduce((s, r) => s + r.modes[m].cleared, 0);
-        return [m, { attempted: a, cleared: cl, clearPct: pct(cl, a) }];
-      })
-    ),
-  };
-  return { rows, total };
+  });
+  const rows = SPLIT_COMPETENCIES.filter((c) => comps.includes(c.id)).map((c) => row(c.id, c.short));
+  return { rows, total: row("*", "Total (unique students)") };
 }
 
-export function overallSplit(attempts: SplitAttempt[]) {
+export function overallSplit(attempts: SplitAttempt[], comps: string[], modes: string[]) {
   const days = attempts.map((a) => a.day).sort();
-  return { asOf: days[days.length - 1] ?? null, ...competencyRows(attempts) };
+  return { asOf: days[days.length - 1] ?? null, ...competencyRows(attempts, comps, modes) };
 }
 
 /** Overall split per year of graduation. Students without a YOG are grouped as "Unknown". */
-export function yogSplit(attempts: SplitAttempt[]) {
+export function yogSplit(attempts: SplitAttempt[], comps: string[], modes: string[]) {
   const groups = new Map<string, SplitAttempt[]>();
   for (const a of attempts) {
     const key = a.yog ?? "Unknown";
@@ -143,7 +140,35 @@ export function yogSplit(attempts: SplitAttempt[]) {
   const keys = [...groups.keys()].sort((x, y) => (x === "Unknown" ? 1 : y === "Unknown" ? -1 : x.localeCompare(y)));
   return keys.map((yog) => ({
     yog,
-    students: new Set(groups.get(yog)!.map((a) => a.candidateId)).size,
-    ...competencyRows(groups.get(yog)!),
+    students: new Set(groups.get(yog)!.map((a) => a.candidateId.split("#")[0])).size,
+    ...competencyRows(groups.get(yog)!, comps, modes),
   }));
+}
+
+const LEVEL_ORDER = ["Below L1", "Below L2", "L1", "L2", "L3", "L4"];
+
+/**
+ * Level of each TR-cleared candidateId (its latest cleared interview), counted per competency.
+ * Rows without a level are counted as "No level".
+ */
+export function trLevelSplit(
+  rows: { candidateId: string; competency: string; day: string; cleared: boolean; level: string | null }[],
+  comps: string[]
+) {
+  const latest = new Map<string, { competency: string; day: string; level: string }>();
+  for (const r of rows) {
+    if (!r.cleared) continue;
+    const k = `${r.competency}|${r.candidateId}`;
+    const prev = latest.get(k);
+    if (!prev || r.day >= prev.day) latest.set(k, { competency: r.competency, day: r.day, level: r.level ?? "No level" });
+  }
+  const rank = (l: string) => (LEVEL_ORDER.includes(l) ? LEVEL_ORDER.indexOf(l) : LEVEL_ORDER.length);
+  return SPLIT_COMPETENCIES.filter((c) => comps.includes(c.id)).map((c) => {
+    const counts = new Map<string, number>();
+    for (const v of latest.values()) if (v.competency === c.id) counts.set(v.level, (counts.get(v.level) ?? 0) + 1);
+    const levels = [...counts.entries()]
+      .sort((a, b) => rank(a[0]) - rank(b[0]) || a[0].localeCompare(b[0]))
+      .map(([level, count]) => ({ level, count }));
+    return { competency: c.short, levels };
+  });
 }

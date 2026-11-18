@@ -4,6 +4,8 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { cn } from "@/lib/utils";
 
 const n = (v: number) => v.toLocaleString();
+const MODE_TEXT: Record<string, string> = { Online: "text-online-text", Offline: "text-offline-text", TR: "text-tr-text" };
+const MODE_DOT: Record<string, string> = { Online: "bg-online", Offline: "bg-offline", TR: "bg-tr" };
 
 /** Competency x mode x stage (Attempted / Qualified) by period. */
 export function PeriodSplitTable({ split, action }: { split: Splits["period"]; action?: React.ReactNode }) {
@@ -50,8 +52,8 @@ export function PeriodSplitTable({ split, action }: { split: Splits["period"]; a
                 )}
                 {i % 2 === 0 && (
                   <TableCell rowSpan={2} className="align-top">
-                    <span className={cn("inline-flex items-center gap-1.5 text-xs font-medium", r.mode === "Online" ? "text-online-text" : "text-offline-text")}>
-                      <span className={cn("size-2 rounded-full", r.mode === "Online" ? "bg-online" : "bg-offline")} />
+                    <span className={cn("inline-flex items-center gap-1.5 text-xs font-medium", MODE_TEXT[r.mode])}>
+                      <span className={cn("size-2 rounded-full", MODE_DOT[r.mode])} />
                       {r.mode}
                     </span>
                   </TableCell>

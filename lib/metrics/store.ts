@@ -7,9 +7,11 @@
  *   ft_comp_attempts  one row per ATTEMPTED result row (candidate_id only, no names)
  *   ft_comp_periods   weekly / monthly attempted, cleared, clearance %
  *   ft_comp_students  one row per student with per-competency detail (jsonb)
+ *   ft_comp_tr        one row per TR interview (candidate_id only)
  */
 import postgres from "postgres";
 import type { Attempt, Metrics, PeriodRow, StudentRow } from "./competency";
+import type { TrInterview } from "./tr";
 
 // postgres.js: works on Node (Vercel) and Bun. Serverless gets a single connection per instance.
 type Sql = postgres.Sql;
@@ -64,7 +66,14 @@ CREATE TABLE IF NOT EXISTS ft_comp_students (
   candidate_id text NOT NULL,
   cleared_any boolean, competencies_attempted text, competencies_cleared text, detail jsonb,
   PRIMARY KEY (run_id, candidate_id)
-);`;
+);
+CREATE TABLE IF NOT EXISTS ft_comp_tr (
+  run_id uuid NOT NULL REFERENCES ft_comp_runs(run_id) ON DELETE CASCADE,
+  candidate_id text NOT NULL,
+  competency text NOT NULL, tab text, interview_on date, status text,
+  attempted boolean, cleared boolean, level text, yog text
+);
+CREATE INDEX IF NOT EXISTS ft_comp_tr_run ON ft_comp_tr (run_id);`;
 
 export type EventRow = {
   event_idx: number;
@@ -92,6 +101,7 @@ export async function persistRun(input: {
   attempts: Attempt[];
   periods: PeriodRow[];
   students: StudentRow[];
+  tr: TrInterview[];
   summaryMd: string;
   report: Record<string, unknown>;
 }): Promise<string> {
@@ -158,6 +168,22 @@ export async function persistRun(input: {
         competencies_attempted: s.competenciesAttempted,
         competencies_cleared: s.competenciesCleared,
         detail: s.detail,
+      }))
+    );
+    await insertChunked(
+      tx,
+      "ft_comp_tr",
+      input.tr.map((t) => ({
+        run_id: runId,
+        candidate_id: t.candidateId,
+        competency: t.competency,
+        tab: t.tab,
+        interview_on: t.day,
+        status: t.status,
+        attempted: t.attempted,
+        cleared: t.cleared,
+        level: t.level,
+        yog: t.yog ?? null,
       }))
     );
   });
@@ -242,14 +268,31 @@ export async function runHistory(limit = 20) {
 /** Attempt rows of a run, in the shape the report splits need. */
 export async function runAttempts(runId: string) {
   const rows = await db()`
-    SELECT candidate_id, competency, mode, to_char(attempted_on, 'YYYY-MM-DD') AS day, qualified, yog
+    SELECT candidate_id, competency, mode, to_char(attempted_on, 'YYYY-MM-DD') AS day,
+           to_char(attempted_on, 'YYYY-MM-DD"T"HH24:MI:SS.MS') AS stamp, qualified, yog
       FROM ft_comp_attempts WHERE run_id = ${runId}`;
   return (rows as Record<string, unknown>[]).map((r) => ({
     candidateId: r.candidate_id as string,
     competency: r.competency as string,
     mode: r.mode as string,
     day: r.day as string,
+    stamp: r.stamp as string,
     qualified: r.qualified as boolean | null,
+    yog: (r.yog as string | null) ?? null,
+  }));
+}
+
+/** TR interviews of a run (attempted ones only), for the splits. */
+export async function runTr(runId: string) {
+  const rows = await db()`
+    SELECT candidate_id, competency, to_char(interview_on, 'YYYY-MM-DD') AS day, cleared, level, yog
+      FROM ft_comp_tr WHERE run_id = ${runId} AND attempted`;
+  return rows.map((r) => ({
+    candidateId: r.candidate_id as string,
+    competency: r.competency as string,
+    day: r.day as string,
+    cleared: r.cleared as boolean,
+    level: (r.level as string | null) ?? null,
     yog: (r.yog as string | null) ?? null,
   }));
 }
