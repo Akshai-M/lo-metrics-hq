@@ -37,7 +37,14 @@ export type EventIssue = {
   status: string;
   error: string | null;
 };
-export type LatestMetrics = { run: Run; competencies: CompetencyRow[]; eventStatus: EventStatusRow[]; issues: EventIssue[] };
+export type PlacementImport = { importedAt: string; source: string | null; records: number };
+export type LatestMetrics = {
+  run: Run;
+  competencies: CompetencyRow[];
+  eventStatus: EventStatusRow[];
+  issues: EventIssue[];
+  placements: PlacementImport | null;
+};
 
 export type PeriodRow = {
   grain: "month" | "week";
@@ -199,6 +206,7 @@ export type TrOutcome = {
 };
 export type Outcomes = {
   runId: string;
+  placementImport: { importedAt: string | null; source: string | null; records: number };
   placement: {
     stage: Stage;
     pool: number;

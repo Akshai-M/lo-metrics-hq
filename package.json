@@ -7,7 +7,8 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "refresh": "bun run lib/metrics/cli.ts"
+    "refresh": "bun run lib/metrics/cli.ts",
+    "placements": "bun run lib/metrics/import-placements.ts"
   },
   "dependencies": {
     "@base-ui/react": "^1.9.0",

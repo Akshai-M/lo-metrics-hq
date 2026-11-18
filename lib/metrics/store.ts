@@ -8,7 +8,11 @@
  *   ft_comp_periods   weekly / monthly attempted, cleared, clearance %
  *   ft_comp_students  one row per student with per-competency detail (jsonb)
  *   ft_comp_tr        one row per TR interview (candidate_id only)
- *   ft_comp_placements one row per placement record (candidate_id, dates, status, type only)
+ *
+ * Placements are separate from runs (loaded with `bun run placements`), so an assessment refresh
+ * never touches them; the dashboard reads the latest import:
+ *   ft_placement_imports  one row per import (when, source file name, record count)
+ *   ft_placements         one row per placement record (candidate_id, dates, status, type only)
  */
 import postgres from "postgres";
 import type { Attempt, Metrics, PeriodRow, StudentRow } from "./competency";
@@ -77,12 +81,18 @@ CREATE TABLE IF NOT EXISTS ft_comp_tr (
 );
 CREATE INDEX IF NOT EXISTS ft_comp_tr_run ON ft_comp_tr (run_id);
 ALTER TABLE ft_comp_tr ADD COLUMN IF NOT EXISTS verdict text;
-CREATE TABLE IF NOT EXISTS ft_comp_placements (
-  run_id uuid NOT NULL REFERENCES ft_comp_runs(run_id) ON DELETE CASCADE,
+CREATE TABLE IF NOT EXISTS ft_placement_imports (
+  import_id uuid PRIMARY KEY,
+  imported_at timestamptz NOT NULL,
+  source text,
+  records int
+);
+CREATE TABLE IF NOT EXISTS ft_placements (
+  import_id uuid NOT NULL REFERENCES ft_placement_imports(import_id) ON DELETE CASCADE,
   candidate_id text NOT NULL,
   entry_on date, status text, latest_status text, placed_through text, placement_type text, company_type text
 );
-CREATE INDEX IF NOT EXISTS ft_comp_placements_run ON ft_comp_placements (run_id);`;
+CREATE INDEX IF NOT EXISTS ft_placements_import ON ft_placements (import_id);`;
 
 export type EventRow = {
   event_idx: number;
@@ -111,7 +121,6 @@ export async function persistRun(input: {
   periods: PeriodRow[];
   students: StudentRow[];
   tr: TrInterview[];
-  placements: Placement[];
   summaryMd: string;
   report: Record<string, unknown>;
 }): Promise<string> {
@@ -195,20 +204,6 @@ export async function persistRun(input: {
         level: t.level,
         verdict: t.verdict,
         yog: t.yog ?? null,
-      }))
-    );
-    await insertChunked(
-      tx,
-      "ft_comp_placements",
-      input.placements.map((p) => ({
-        run_id: runId,
-        candidate_id: p.candidateId,
-        entry_on: p.day,
-        status: p.status,
-        latest_status: p.latestStatus,
-        placed_through: p.placedThrough,
-        placement_type: p.placementType,
-        company_type: p.companyType,
       }))
     );
   });
@@ -325,18 +320,60 @@ export async function runTr(runId: string) {
   }));
 }
 
-/** Placement records of a run. */
-export async function runPlacements(runId: string) {
-  const rows = await db()`
+/** Replaces the placement data with a new import (kept apart from metrics runs). */
+export async function importPlacements(rows: Placement[], source: string) {
+  const sql = db();
+  await sql.unsafe(SCHEMA);
+  const importId = crypto.randomUUID();
+  await sql.begin(async (tx) => {
+    await tx`INSERT INTO ft_placement_imports ${tx({ import_id: importId, imported_at: new Date(), source, records: rows.length })}`;
+    await insertChunked(
+      tx,
+      "ft_placements",
+      rows.map((p) => ({
+        import_id: importId,
+        candidate_id: p.candidateId,
+        entry_on: p.day,
+        status: p.status,
+        latest_status: p.latestStatus,
+        placed_through: p.placedThrough,
+        placement_type: p.placementType,
+        company_type: p.companyType,
+      }))
+    );
+    // Only the latest import is used; older ones are removed.
+    await tx`DELETE FROM ft_placement_imports WHERE import_id <> ${importId}`;
+  });
+  return importId;
+}
+
+/** The latest placement import: when, from which file, and its records (empty if never imported). */
+export async function latestPlacements() {
+  const sql = db();
+  const [imp] = await sql`
+    SELECT import_id, imported_at, source, records FROM ft_placement_imports ORDER BY imported_at DESC LIMIT 1`.catch(() => []);
+  if (!imp) return { importedAt: null as string | null, source: null as string | null, rows: [] as Placement[] };
+  const rows = await sql`
     SELECT candidate_id, to_char(entry_on, 'YYYY-MM-DD') AS day, status, latest_status, placed_through, placement_type, company_type
-      FROM ft_comp_placements WHERE run_id = ${runId}`;
-  return rows.map((r) => ({
-    candidateId: r.candidate_id as string,
-    day: r.day as string | null,
-    status: r.status as string,
-    latestStatus: r.latest_status as string,
-    placedThrough: r.placed_through as string,
-    placementType: r.placement_type as string,
-    companyType: r.company_type as string,
-  }));
+      FROM ft_placements WHERE import_id = ${imp.import_id}`;
+  return {
+    importedAt: new Date(imp.imported_at as string).toISOString(),
+    source: imp.source as string | null,
+    rows: rows.map((r) => ({
+      candidateId: r.candidate_id as string,
+      day: r.day as string | null,
+      status: r.status as string,
+      latestStatus: r.latest_status as string,
+      placedThrough: r.placed_through as string,
+      placementType: r.placement_type as string,
+      companyType: r.company_type as string,
+    })),
+  };
+}
+
+/** When the latest placement import ran, from which file, and how many records. */
+export async function placementImportInfo() {
+  const [imp] = await db()`
+    SELECT imported_at, source, records FROM ft_placement_imports ORDER BY imported_at DESC LIMIT 1`.catch(() => []);
+  return imp ? { importedAt: new Date(imp.imported_at as string).toISOString(), source: imp.source as string | null, records: imp.records as number } : null;
 }

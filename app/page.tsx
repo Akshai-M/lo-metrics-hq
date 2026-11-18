@@ -67,6 +67,8 @@ function toPoint(p: Overview["periods"][number]): Point {
 }
 
 const fmtPct = (v: number | null, d = 1) => (v === null ? "n/a" : `${v.toFixed(d)}%`);
+const fmtWhen = (iso: string) =>
+  new Date(iso).toLocaleString("en-IN", { day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit", timeZone: "Asia/Kolkata" });
 
 function href(s: State) {
   const params = new URLSearchParams();
@@ -405,11 +407,11 @@ async function Dashboard({ searchParams }: { searchParams: Promise<SP> }) {
     return (
       <Shell state={state} runId={run.runId} bar={bar}>
         <Hero state={state} runAt={run.runAt} />
-        {pl.records === 0 && (
-          <p className="rounded-md border border-dashed bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
-            No placement data in this run. Put the &quot;Academy All Placed&quot; export at data/placements.csv and run bun run refresh.
-          </p>
-        )}
+        <p className="rounded-md border border-dashed bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
+          {outcomes.placementImport.importedAt
+            ? `Placement data: ${outcomes.placementImport.records.toLocaleString()} records, imported ${fmtWhen(outcomes.placementImport.importedAt)}${outcomes.placementImport.source ? ` from ${outcomes.placementImport.source}` : ""}. To update, run bun run placements "<path to the Academy All Placed export>".`
+            : `No placement data yet. Run bun run placements "<path to the Academy All Placed export>".`}
+        </p>
         <Card className="gap-0 overflow-hidden rounded-lg py-0">
           <div className="grid grid-cols-1 gap-px bg-border sm:grid-cols-2 xl:grid-cols-5">
             <Kpi label="Assessed pool" value={pl.pool.toLocaleString()} sub={`Students who cleared ${stageName} (pool entry) in the selection`} icon={Users} chip="green" />
@@ -575,7 +577,7 @@ async function Dashboard({ searchParams }: { searchParams: Promise<SP> }) {
       <Shell state={state} runId={run.runId} bar={bar}>
         <Hero state={state} runAt={run.runAt} />
         <Card className="gap-0 overflow-hidden rounded-lg py-0">
-          <div className="grid grid-cols-1 gap-px bg-border sm:grid-cols-2 xl:grid-cols-4">
+          <div className="grid grid-cols-1 gap-px bg-border sm:grid-cols-2 xl:grid-cols-5">
             <Kpi
               label="Latest run"
               value={run.runId.slice(0, 8)}
@@ -597,6 +599,17 @@ async function Dashboard({ searchParams }: { searchParams: Promise<SP> }) {
               sub="All modes, no filters: blank gated score or no cutoff for the attempt date"
               icon={AlertTriangle}
               chip="amber"
+            />
+            <Kpi
+              label="Placement data"
+              value={latest.placements ? latest.placements.records.toLocaleString() : "None"}
+              sub={
+                latest.placements
+                  ? `records · imported ${fmtWhen(latest.placements.importedAt)}${latest.placements.source ? ` from ${latest.placements.source}` : ""} · bun run placements`
+                  : "Not imported yet: run bun run placements"
+              }
+              icon={Briefcase}
+              chip="green"
             />
           </div>
         </Card>

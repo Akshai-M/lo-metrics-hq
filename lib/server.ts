@@ -30,7 +30,7 @@ import { applyFilters, loadRows, pick } from "./metrics/filters";
 import { failureReasons, reattemptViews } from "./metrics/reattempts";
 import { studentRows } from "./metrics/students";
 import { placementViews, trViews } from "./metrics/outcomes";
-import { runPlacements } from "./metrics/store";
+import { latestPlacements, placementImportInfo } from "./metrics/store";
 import { COMPETENCIES, TR_COUNT } from "./metrics/config";
 import {
   SESSION_COOKIE,
@@ -136,12 +136,13 @@ export const api = new Elysia({ prefix: "/api" })
   .get("/metrics/latest", async ({ status }) => {
     const run = await latestRun();
     if (!run) return status(404, { error: "No metrics run yet. POST /api/refresh to load data." });
-    const [competencies, statuses, issues] = await Promise.all([
+    const [competencies, statuses, issues, placements] = await Promise.all([
       competencyBreakdown(run.runId),
       eventStatus(run.runId),
       eventIssues(run.runId),
+      placementImportInfo(),
     ]);
-    return { run, competencies, eventStatus: statuses, issues };
+    return { run, competencies, eventStatus: statuses, issues, placements };
   })
   .get(
     "/periods",
@@ -235,11 +236,12 @@ export const api = new Elysia({ prefix: "/api" })
     async ({ query, status }) => {
       const run = await latestRun();
       if (!run) return status(404, { error: "No metrics run yet." });
-      const [all, placements] = await Promise.all([loadRows(run.runId), runPlacements(run.runId)]);
+      const [all, placements] = await Promise.all([loadRows(run.runId), latestPlacements()]);
       const { filters, rows } = applyFilters(all, query);
       return {
         runId: run.runId,
-        placement: placementViews(rows, all, placements, filters.comps),
+        placementImport: { importedAt: placements.importedAt, source: placements.source, records: placements.rows.length },
+        placement: placementViews(rows, all, placements.rows, filters.comps),
         tr: trViews(rows, filters.comps),
       };
     },

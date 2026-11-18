@@ -1,5 +1,5 @@
 /**
- * Placements from data/placements.csv: the "Academy All Placed" export (one row per placement
+ * Placements from the "Academy All Placed" export (default data/placements.csv) (one row per placement
  * record, so a student can have several). Columns are found by header name, so the raw export can
  * be dropped in as is. Only the columns below are read; names, LinkedIn, company names, remarks
  * and the rest are ignored and never stored.
@@ -72,8 +72,8 @@ export function placementDay(v: string): string | null {
   return month < 0 ? null : `${m[3]}-${String(month + 1).padStart(2, "0")}-${m[2].padStart(2, "0")}`;
 }
 
-export async function loadPlacements(): Promise<{ file: boolean; rows: Placement[]; skipped: number }> {
-  const f = Bun.file(FILE);
+export async function loadPlacements(path = FILE): Promise<{ file: boolean; rows: Placement[]; skipped: number }> {
+  const f = Bun.file(path);
   if (!(await f.exists())) return { file: false, rows: [], skipped: 0 };
   const [head, ...body] = parseCsv(await f.text());
   const col = (name: string) => head.findIndex((h) => h.trim().toLowerCase() === name.toLowerCase());
@@ -86,7 +86,7 @@ export async function loadPlacements(): Promise<{ file: boolean; rows: Placement
     type: col("Placement Type"),
     company: col("Company Type"),
   };
-  if (c.id < 0 || c.day < 0 || c.status < 0) throw new Error("data/placements.csv: needs columns 'user id', 'Date of Entry', 'Placement Status'");
+  if (c.id < 0 || c.day < 0 || c.status < 0) throw new Error(`${path}: needs columns 'user id', 'Date of Entry', 'Placement Status'`);
   const get = (r: string[], i: number) => (i < 0 ? "" : (r[i] ?? "").trim());
   const rows: Placement[] = [];
   let skipped = 0;

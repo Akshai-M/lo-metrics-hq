@@ -22,7 +22,8 @@ lib/metrics/filters.ts        global filters (URL params -> filtered rows, attem
 lib/metrics/overview.ts       overview numbers for the filtered rows
 lib/metrics/reattempts.ts     reattempts & duration views, failure reasons
 lib/metrics/students.ts       student-wise table
-lib/metrics/placements.ts     placement file loader (data/placements.csv)
+lib/metrics/placements.ts     placement export reader
+lib/metrics/import-placements.ts `bun run placements`
 lib/metrics/outcomes.ts       assessed pool -> placed, TR -> cleared, verdict bands
 lib/metrics/tr.ts             TR interviews (post-offline sheet, action=postOfflineData)
 lib/metrics/store.ts          Postgres (postgres.js; runs on Node and Bun)
@@ -85,12 +86,20 @@ in the last 30 days up to the latest date in the data (`ACTIVE_DAYS` in `config.
 `data/user_yog.csv` (columns `user_id,YOG`) gives each student's year of graduation for the
 YOG-wise split. To update it, replace the file with a new export and run `bun run refresh`.
 
-## Placement file
+## Placement data
 
-`data/placements.csv` is the "Academy All Placed" export (one row per placement record). Columns are
-read by header name: `user id`, `Date of Entry`, `Placement Status`, `Latest Placement Status`,
-`Placed Through`, `Placement Type`, `Company Type`; everything else (names, links, companies,
-remarks) is ignored and never stored. To update, replace the file and run `bun run refresh`.
+Placements live in their own tables (`ft_placement_imports`, `ft_placements`), separate from the
+assessment runs, so `bun run refresh` never touches them. Load or update them with the "Academy All
+Placed" export:
+
+```
+bun run placements "<path to the export .csv>"   # or no path: data/placements.csv
+```
+
+Columns are read by header name: `user id`, `Date of Entry`, `Placement Status`,
+`Latest Placement Status`, `Placed Through`, `Placement Type`, `Company Type`. Everything else (names,
+links, companies, remarks) is ignored and never stored. Each import replaces the previous one; the
+Data health tab shows when it ran and how many records it has.
 
 **Placement & TR** tab (`lib/metrics/outcomes.ts`):
 
@@ -115,6 +124,7 @@ bun run refresh                    # recompute metrics from cached sheets and sa
 bun run refresh --refresh          # re-fetch every sheet first
 bun run refresh --refresh-errors   # re-fetch only sheets that failed
 bun run refresh --no-db            # compute + write output/ only
+bun run placements "<file.csv>"    # load placement data (separate from refresh)
 ```
 
 ## API
