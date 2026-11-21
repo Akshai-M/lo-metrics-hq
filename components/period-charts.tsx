@@ -7,7 +7,7 @@ import { Bar, CartesianGrid, ComposedChart, LabelList, Line, usePlotArea, XAxis,
 import type { PeriodSplit, PeriodSplitRow, Splits } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Calendar } from "@/components/ui/calendar";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardDescription, CardHeader } from "@/components/ui/card";
 import { ChartContainer, type ChartConfig } from "@/components/ui/chart";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -20,6 +20,8 @@ import { PeriodSplitTable } from "@/components/split-tables";
 const MODE_COLOR: Record<string, string> = { Online: "var(--online)", Offline: "var(--offline)", TR: "var(--tr)" };
 const MODE_LINE: Record<string, string> = { Online: "var(--online-text)", Offline: "var(--offline-text)", TR: "var(--tr-text)" };
 type Grain = "month" | "week";
+// % axis: 0-100 sits in the upper part of the plot, the bars below it.
+const PCT_DOMAIN: [number, number] = [-110, 145];
 type Point = Record<string, string | number | boolean | null>;
 
 const show = (d: string) => format(parseISO(d), "d MMM yyyy");
@@ -124,7 +126,6 @@ export function PeriodModeCharts({
       <CardHeader className="flex flex-col gap-1">
         <div className="flex min-w-0 flex-col gap-1">
           <div className="eyebrow">{index} — Trend by mode</div>
-          <CardTitle className="font-serif text-2xl font-normal">Clearance by period and mode</CardTitle>
           <CardDescription>
             Bars: qualified students, labelled qualified / attempted. Line: that period&apos;s clearance % (qualified ÷ attempted distinct
             students). On each dotted line: the difference in clearance % from the previous period (▲ up, ▼ down), coloured by mode.
@@ -207,18 +208,22 @@ function PeriodChart({
   // Weekly view: monthly numbers per mode for the same filters, shown beside the chart.
   const monthSplit = (byYog ?? periods).month;
   const monthRows = pick(monthSplit);
+  const lastPct = new Map<string, number>();
   const monthly =
     grain !== "week"
       ? []
       : monthSplit.columns.flatMap((c, i) => {
           const [start, end] = columnRange(c.key, "month");
-          if (end < from || start > to) return [];
           const cells = shown.flatMap((m) => {
             const att = monthRows.find((r) => r.mode === m && r.stage === "Attempted")?.values[i] ?? null;
             if (att === null) return [];
             const q = monthRows.find((r) => r.mode === m && r.stage === "Qualified")?.values[i] ?? 0;
-            return [{ mode: m, q, att, pct: att ? Math.round((1000 * q) / att) / 10 : null }];
+            const pct = att ? Math.round((1000 * q) / att) / 10 : null;
+            const prev = lastPct.get(m);
+            if (pct !== null) lastPct.set(m, pct);
+            return [{ mode: m, q, att, pct, change: pct === null || prev === undefined ? null : pct - prev }];
           });
+          if (end < from || start > to) return [];
           return cells.length ? [{ label: c.label, cells }] : [];
         });
 
@@ -232,11 +237,6 @@ function PeriodChart({
       point[`${m}_lbl`] = att === null ? null : `${q}/${att}`;
       point[`${m}_pct`] = att ? Math.round((1000 * (q ?? 0)) / att) / 10 : null;
     }
-    // Two modes with close clearance % in the same period: the lower one's label goes under its dot.
-    const byPct = shown.filter((m) => point[`${m}_pct`] !== null).sort((a, b) => Number(point[`${b}_pct`]) - Number(point[`${a}_pct`]));
-    byPct.forEach((m, k) => {
-      point[`${m}_below`] = k > 0 && Number(point[`${byPct[k - 1]}_pct`]) - Number(point[`${m}_pct`]) < 18 && !point[`${byPct[k - 1]}_below`];
-    });
     return shown.some((m) => point[`${m}_pct`] !== null) ? [point] : [];
   });
   const maxQ = Math.max(1, ...points.flatMap((p) => shown.map((m) => Number(p[`${m}_q`] ?? 0))));
@@ -308,14 +308,14 @@ function PeriodChart({
         <>
           <Legend modes={shown} />
           <div className="flex flex-col gap-4 xl:flex-row">
-          <div className="min-w-0 flex-1 overflow-x-auto">
+          <div className="min-w-0 flex-1 overflow-x-auto pb-3">
             <ChartContainer config={config} className="aspect-auto h-[340px] w-full" style={{ minWidth }}>
               <ComposedChart data={points} margin={{ top: 8, right: 8, left: 8, bottom: 0 }} barGap={4} barCategoryGap="22%">
                 <CartesianGrid vertical={false} strokeDasharray="3 4" stroke="var(--grid)" />
                 <XAxis dataKey="label" tickLine={false} axisLine={false} tickMargin={10} interval={0} />
                 {/* Bars use the lower part of the plot, the % line the upper part, so labels don't collide. */}
                 <YAxis yAxisId="n" hide domain={[0, maxQ * 2.6]} />
-                <YAxis yAxisId="pct" hide domain={[-110, 145]} />
+                <YAxis yAxisId="pct" hide domain={PCT_DOMAIN} />
                 {shown.map((m) => (
                   <Bar key={`${m}_q`} yAxisId="n" dataKey={`${m}_q`} fill={MODE_COLOR[m]} radius={[4, 4, 0, 0]} maxBarSize={44} isAnimationActive={false}>
                     <LabelList dataKey={`${m}_lbl`} position="top" className="fill-foreground font-mono text-[10px]" />
@@ -332,30 +332,9 @@ function PeriodChart({
                     activeDot={false}
                     connectNulls
                     isAnimationActive={false}
-                  >
-                    <LabelList
-                      dataKey={`${m}_pct`}
-                      content={(props) => {
-                        const { x, y, value: v, index: i } = props as { x?: number; y?: number; value?: number | null; index?: number };
-                        if (v == null || x == null || y == null) return null;
-                        const below = !!points[i ?? 0]?.[`${m}_below`];
-                        return (
-                          <text
-                            x={x}
-                            y={below ? y + 18 : y - 10}
-                            textAnchor="middle"
-                            className="fill-foreground font-mono text-[11px] font-medium"
-                            stroke="var(--card)"
-                            strokeWidth={4}
-                            paintOrder="stroke"
-                          >
-                            {v}%
-                          </text>
-                        );
-                      }}
-                    />
-                  </Line>
+                  />
                 ))}
+                <LineLabels points={points} modes={shown} />
                 <Deltas points={points} modes={shown} />
               </ComposedChart>
             </ChartContainer>
@@ -369,10 +348,14 @@ function PeriodChart({
 }
 
 /** Beside the weekly chart: qualified / attempted and clearance % per month and mode. */
-function MonthlyPanel({ months }: { months: { label: string; cells: { mode: string; q: number; att: number; pct: number | null }[] }[] }) {
+type MonthCell = { mode: string; q: number; att: number; pct: number | null; change: number | null };
+function MonthlyPanel({ months }: { months: { label: string; cells: MonthCell[] }[] }) {
   return (
     <aside className="shrink-0 rounded-md border bg-muted/30 p-3 xl:max-h-[340px] xl:w-64 xl:overflow-y-auto">
-      <div className="eyebrow mb-2">Monthly view</div>
+      <div className="mb-2 flex flex-col gap-0.5">
+        <span className="eyebrow">Monthly view</span>
+        <span className="text-[11px] text-muted-foreground">Qualified/Attempted · Clearance %</span>
+      </div>
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-1">
         {months.map((mo) => (
           <div key={mo.label} className="flex flex-col gap-1">
@@ -380,7 +363,14 @@ function MonthlyPanel({ months }: { months: { label: string; cells: { mode: stri
             {mo.cells.map((c) => (
               <div key={c.mode} className="flex items-center justify-between gap-3 text-xs">
                 <span className="flex items-center gap-1.5 text-muted-foreground">
-                  <span className="size-2 rounded-full" style={{ background: MODE_COLOR[c.mode] }} />
+                  {/* change in clearance % from the previous month with an exam in this mode */}
+                  <span
+                    className="w-3 text-center text-[10px] leading-none"
+                    style={{ color: MODE_LINE[c.mode] }}
+                    title={c.change === null ? "First month" : `${c.change > 0 ? "+" : ""}${c.change.toFixed(1)}% vs previous month`}
+                  >
+                    {c.change === null ? "–" : c.change > 0 ? "▲" : c.change < 0 ? "▼" : "="}
+                  </span>
                   {c.mode}
                 </span>
                 <span className="font-mono tabular-nums">
@@ -411,6 +401,57 @@ function Legend({ modes }: { modes: string[] }) {
         </span>
       ))}
     </div>
+  );
+}
+
+/**
+ * Clearance % above each line dot. When modes are close in a period, a label that would hit
+ * another label or dot moves under its own dot, then further down until it is clear.
+ */
+function LineLabels({ points, modes }: { points: Point[]; modes: string[] }) {
+  const plot = usePlotArea();
+  if (!plot || !points.length) return null;
+  const band = plot.width / points.length;
+  const [lo, hi] = PCT_DOMAIN;
+  const yOf = (v: number) => plot.y + (plot.height * (hi - v)) / (hi - lo);
+  const labels: { key: string; x: number; y: number; mode: string; v: number }[] = [];
+  points.forEach((p, i) => {
+    const x = plot.x + (i + 0.5) * band;
+    const items = modes
+      .filter((m) => p[`${m}_pct`] !== null && p[`${m}_pct`] !== undefined)
+      .map((m) => ({ mode: m, v: Number(p[`${m}_pct`]), dot: yOf(Number(p[`${m}_pct`])) }))
+      .sort((a, b) => a.dot - b.dot);
+    const placed: number[] = [];
+    const hitsLabel = (y: number) => placed.some((py) => Math.abs(py - y) < 13);
+    const hitsDot = (y: number, self: number) => items.some((it, k) => k !== self && y - 10 < it.dot + 5 && y + 3 > it.dot - 5);
+    items.forEach((it, k) => {
+      let y = it.dot - 10;
+      if (hitsLabel(y) || hitsDot(y, k)) {
+        y = it.dot + 18;
+        for (let guard = 0; guard < 12 && (hitsLabel(y) || hitsDot(y, k)); guard++) y += 13;
+      }
+      placed.push(y);
+      labels.push({ key: `${i}-${it.mode}`, x, y, mode: it.mode, v: it.v });
+    });
+  });
+  return (
+    <g>
+      {labels.map((l) => (
+        <text
+          key={l.key}
+          x={l.x}
+          y={l.y}
+          textAnchor="middle"
+          fill={MODE_LINE[l.mode]}
+          stroke="var(--card)"
+          strokeWidth={4}
+          paintOrder="stroke"
+          className="font-mono text-[11px] font-semibold"
+        >
+          {l.v}%
+        </text>
+      ))}
+    </g>
   );
 }
 
