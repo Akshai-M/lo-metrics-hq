@@ -9,7 +9,6 @@ import {
   SidebarFooter,
   SidebarGroup,
   SidebarGroupContent,
-  SidebarGroupLabel,
   SidebarHeader,
   SidebarMenu,
   SidebarMenuButton,
@@ -41,17 +40,13 @@ export function AppSidebar({ active, hrefs, user }: { active: Tab; hrefs: Record
           <div className="flex size-8 shrink-0 items-center justify-center rounded-md bg-primary text-primary-foreground">
             <Layers className="size-4" />
           </div>
-          <div className="min-w-0 leading-tight group-data-[collapsible=icon]:hidden">
-            <div className="truncate font-semibold">
-              LO Metrics HQ<span className="text-primary">.</span>
-            </div>
-            <div className="eyebrow truncate">ACD LO</div>
+          <div className="min-w-0 truncate font-semibold whitespace-nowrap group-data-[collapsible=icon]:hidden">
+            LO Metrics HQ<span className="text-primary">.</span>
           </div>
         </div>
       </SidebarHeader>
       <SidebarContent>
         <SidebarGroup>
-          <SidebarGroupLabel className="eyebrow">FT competency</SidebarGroupLabel>
           <SidebarGroupContent>
             <SidebarMenu>
               {TABS.map((t) => {

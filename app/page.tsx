@@ -127,8 +127,6 @@ function Shell({ state, runId, bar, children }: { state: State; runId?: string; 
       <SidebarInset className="min-w-0">
         <header className="sticky top-0 z-20 flex h-16 shrink-0 items-center gap-3 border-b bg-background/85 px-4 backdrop-blur md:px-6">
           <SidebarTrigger className="-ml-1" />
-          <Separator orientation="vertical" className="h-5!" />
-          <span className="eyebrow hidden truncate sm:inline">FT competency assessments</span>
           <div className="ml-auto flex items-center gap-3">
             <span className="eyebrow flex items-center gap-1.5">
               <span className="size-2 rounded-full bg-primary" /> Internal report
@@ -160,7 +158,7 @@ function Hero({ state, runAt, controls }: { state: State; runAt?: string; contro
           <span className="h-px w-5 bg-primary" />
           {tab.eyebrow} <span className="text-primary">/ {String(idx + 1).padStart(2, "0")}</span>
         </div>
-        <h1 className="mt-2 font-serif text-4xl tracking-tight sm:text-5xl">{tab.label}</h1>
+        <h1 className="mt-2 font-serif text-4xl tracking-tight sm:text-5xl">{tab.title ?? tab.label}</h1>
         <p className="mt-2 max-w-2xl text-muted-foreground">{DESCRIPTIONS[state.tab]}</p>
       </div>
       <div className="flex flex-wrap items-center gap-3 lg:justify-end">
