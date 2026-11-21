@@ -26,7 +26,7 @@ import { runPipeline } from "./metrics/pipeline";
 import { competencyBreakdown, eventIssues, eventStatus, latestRun, periods, runHistory } from "./metrics/store";
 import { overallSplit, periodSplit, trLevelSplit, yogSplit } from "./metrics/splits";
 import { overview, stages } from "./metrics/overview";
-import { applyFilters, loadRows, pick } from "./metrics/filters";
+import { applyFilters, loadRows } from "./metrics/filters";
 import { failureReasons, reattemptViews } from "./metrics/reattempts";
 import { studentRows } from "./metrics/students";
 import { placementViews, trViews } from "./metrics/outcomes";
@@ -88,7 +88,6 @@ const filterQuery = t.Object({
   unev: t.Optional(t.String()),
   active: t.Optional(t.String()),
   rcomp: t.Optional(t.String()),
-  pcomps: t.Optional(t.String()), // period chart: competencies to combine (default all selected)
 });
 
 const PUBLIC = new Set(["/api/health", "/api/auth/login"]);
@@ -193,7 +192,9 @@ export const api = new Elysia({ prefix: "/api" })
         runId: run.runId,
         trCount: TR_COUNT,
         modes,
-        period: periodSplit(attempts, query.grain ?? "month", comps, modes, pick(query.pcomps, comps)),
+        period: periodSplit(attempts, query.grain ?? "month", comps, modes),
+        // Both grains for the period charts (each chart has its own Weekly / Monthly switch).
+        periods: { month: periodSplit(attempts, "month", comps, modes), week: periodSplit(attempts, "week", comps, modes) },
         overall: { ...overallSplit(attempts, comps, modes), trLevels: modes.includes("TR") ? trLevelSplit(tr, comps) : [] },
         yog: yogSplit(attempts, comps, modes),
       };

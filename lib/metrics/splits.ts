@@ -53,12 +53,8 @@ function columnFor(day: string, grain: "month" | "week", multiYear: boolean): Pe
   return { key: w.start, label: `${w.label}${suffix}` };
 }
 
-/**
- * subset: competencies picked in the period chart (default all selected). "subset" rows count a
- * student once across those competencies.
- */
-export function periodSplit(attempts: SplitAttempt[], grain: "month" | "week", comps: string[], modes: string[], subset: string[] = comps) {
-  if (!attempts.length) return { grain, columns: [] as PeriodColumn[], rows: [] as PeriodSplitRow[], totals: [] as PeriodSplitRow[], subset: [] as PeriodSplitRow[], subsetComps: subset };
+export function periodSplit(attempts: SplitAttempt[], grain: "month" | "week", comps: string[], modes: string[]) {
+  if (!attempts.length) return { grain, columns: [] as PeriodColumn[], rows: [] as PeriodSplitRow[], totals: [] as PeriodSplitRow[] };
   const days = attempts.map((a) => a.day).sort();
   const multiYear = days[0].slice(0, 4) !== days[days.length - 1].slice(0, 4);
 
@@ -70,7 +66,6 @@ export function periodSplit(attempts: SplitAttempt[], grain: "month" | "week", c
     columns.set(col.key, col);
     // Per competency, and "*" = all selected competencies (unique students).
     const keys = [`${a.competency}|${a.mode}|${col.key}`, `*|${a.mode}|${col.key}`];
-    if (subset.includes(a.competency)) keys.push(`S|${a.mode}|${col.key}`);
     for (const k of keys) {
       if (!attempted.has(k)) attempted.set(k, new Set());
       attempted.get(k)!.add(a.candidateId);
@@ -96,7 +91,7 @@ export function periodSplit(attempts: SplitAttempt[], grain: "month" | "week", c
     );
   const rows = SPLIT_COMPETENCIES.filter((x) => comps.includes(x.id)).flatMap((c) => block(c.id, c.short));
   // All selected competencies together: a student counts once per mode and period.
-  return { grain, columns: cols, rows, totals: block("*", "All"), subset: block("S", "Selected"), subsetComps: subset };
+  return { grain, columns: cols, rows, totals: block("*", "All") };
 }
 
 export type ModeCell = { attempted: number; cleared: number; clearPct: number | null };

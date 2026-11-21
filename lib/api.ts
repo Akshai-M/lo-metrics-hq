@@ -140,24 +140,18 @@ export type ModeCell = { attempted: number; cleared: number; clearPct: number | 
 export type OverallRow = { competency: string; modes: Record<string, ModeCell> };
 export type YogGroup = { yog: string; students: number; rows: OverallRow[]; total: OverallRow };
 export type TrLevels = { competency: string; levels: { level: string; count: number }[] };
+export type PeriodSplit = { grain: "month" | "week"; columns: PeriodColumn[]; rows: PeriodSplitRow[]; totals: PeriodSplitRow[] };
 export type Splits = {
   runId: string;
   trCount: "students" | "interviews";
   modes: string[];
-  period: {
-    grain: "month" | "week";
-    columns: PeriodColumn[];
-    rows: PeriodSplitRow[];
-    totals: PeriodSplitRow[];
-    subset: PeriodSplitRow[]; // the competencies picked in the period chart, students counted once
-    subsetComps: string[];
-  };
+  period: PeriodSplit;
+  periods: { month: PeriodSplit; week: PeriodSplit };
   overall: { asOf: string | null; rows: OverallRow[]; total: OverallRow; trLevels: TrLevels[] };
   yog: YogGroup[];
 };
 
-export const getSplits = (grain: "month" | "week", filters: string, pcomps?: string | null) =>
-  get<Splits>(`/api/splits?grain=${grain}${filters ? `&${filters}` : ""}${pcomps ? `&pcomps=${pcomps}` : ""}`);
+export const getSplits = (grain: "month" | "week", filters: string) => get<Splits>(`/api/splits?grain=${grain}${filters ? `&${filters}` : ""}`);
 
 const withFilters = (path: string, filters: string) => `${path}${path.includes("?") ? "&" : "?"}${filters}`.replace(/[?&]$/, "");
 

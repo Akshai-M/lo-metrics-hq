@@ -8,8 +8,8 @@ import { ClearanceTrendChart, CompetencyClearanceChart, type Point } from "@/com
 import { StageFunnel } from "@/components/funnel";
 import { GlobalFilters } from "@/components/global-filters";
 import { ModeBenchmark, OverallModeCard, YogCohortSplits } from "@/components/mode-split";
-import { PeriodSplitTable } from "@/components/split-tables";
-import { PeriodModeCharts } from "@/components/period-charts";
+import { PeriodModeCharts, PeriodTable } from "@/components/period-charts";
+import { SPLIT_COMPETENCIES } from "@/lib/metrics/splits";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
@@ -124,7 +124,7 @@ function Shell({ state, runId, bar, children }: { state: State; runId?: string; 
   return (
     <SidebarProvider>
       <AppSidebar active={state.tab} hrefs={hrefs} user={state.user} />
-      <SidebarInset>
+      <SidebarInset className="min-w-0">
         <header className="sticky top-0 z-20 flex h-16 shrink-0 items-center gap-3 border-b bg-background/85 px-4 backdrop-blur md:px-6">
           <SidebarTrigger className="-ml-1" />
           <Separator orientation="vertical" className="h-5!" />
@@ -141,7 +141,7 @@ function Shell({ state, runId, bar, children }: { state: State; runId?: string; 
             )}
           </div>
         </header>
-        <div className="flex w-full flex-1 flex-col gap-6 px-4 py-6 md:px-6 lg:px-8 lg:py-8 2xl:px-12">
+        <div className="flex w-full min-w-0 flex-1 flex-col gap-6 px-4 py-6 md:px-6 lg:px-8 lg:py-8 2xl:px-12">
           {bar}
           {children}
         </div>
@@ -190,13 +190,12 @@ async function Dashboard({ searchParams }: { searchParams: Promise<SP> }) {
   }
   const state: State = { tab, grain, filters: fq.toString(), user: me.username };
 
-  const pcomps = typeof sp.pcomps === "string" && /^[C0-9,]+$/.test(sp.pcomps) ? sp.pcomps : null;
   const rcomp = typeof sp.rcomp === "string" && sp.rcomp in COMPETENCIES ? sp.rcomp : null;
   const none = Promise.resolve(null);
   const [latest, ov, splits, failures, reattempts, students, outcomes] = await Promise.all([
     getLatestMetrics(),
     getOverview(grain, state.filters), // also gives the filter bar its options
-    ["splits", "yog", "competency"].includes(tab) ? getSplits(grain, state.filters, tab === "splits" ? pcomps : null) : none,
+    ["splits", "yog", "competency"].includes(tab) ? getSplits(grain, tab === "splits" ? "online=1" : state.filters) : none,
     tab === "competency" ? getFailures(state.filters) : none,
     tab === "reattempts" ? getReattempts(rcomp, state.filters) : none,
     tab === "students" ? getStudents(state.filters) : none,
@@ -222,17 +221,18 @@ async function Dashboard({ searchParams }: { searchParams: Promise<SP> }) {
 
   if (tab === "splits") {
     return (
-      <Shell state={state} runId={run.runId} bar={bar}>
-        <Hero state={state} runAt={run.runAt} controls={<SegmentedNav label="Grain" value={grain} options={grainOptions(state)} />} />
+      <Shell state={state} runId={run.runId}>
+        <Hero state={state} />
         {splits && (
           <>
             <PeriodModeCharts
-              split={splits.period}
+              periods={splits.periods}
               modes={splits.modes}
-              options={f.comps.map((c) => ({ value: c, label: `${c} ${COMPETENCIES[c]}`, short: c }))}
+              yogs={ov.options.yogs}
+              names={Object.fromEntries(SPLIT_COMPETENCIES.map((c) => [c.short, `${c.short} · ${COMPETENCIES[c.id]}`]))}
               index="01"
             />
-            <PeriodSplitTable split={splits.period} index="02" />
+            <PeriodTable periods={splits.periods} index="02" />
           </>
         )}
       </Shell>
