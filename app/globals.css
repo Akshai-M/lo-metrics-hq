@@ -125,6 +125,10 @@
   body {
     @apply bg-background text-foreground;
   }
+  /* Cards inside grids / flex rows may shrink below their content (wide tables and charts scroll inside). */
+  [data-slot="card"] {
+    min-width: 0;
+  }
   html {
     @apply font-sans;
   }
