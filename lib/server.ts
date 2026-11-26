@@ -189,7 +189,8 @@ async function dashboardView(tab: DashTab, q: FilterQuery) {
   const run = await cachedLatestRun();
   if (!run) return null;
   const [all, info] = await Promise.all([cachedRows(run.runId), cachedRunDetails(run.runId)]);
-  const fq = tab === "splits" ? { online: "1", ...(q.yogs ? { yogs: q.yogs } : {}) } : q;
+  // Splits: the page's own filters (mode, YOG, dates) are applied in the browser; the chart asks for a YOG subset or a date range on Apply.
+  const fq = tab === "splits" ? { online: "1", ...(q.yogs ? { yogs: q.yogs } : {}), ...(q.from ? { from: q.from } : {}), ...(q.to ? { to: q.to } : {}) } : q;
   const out: Record<string, unknown> = {
     tab,
     latest: { run, competencies: info.competencies, eventStatus: info.eventStatus, issues: info.issues, placements: info.placements },
