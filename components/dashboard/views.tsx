@@ -162,7 +162,7 @@ export function SplitsView({ d }: { d: Dashboard }) {
   const s = d.splits;
   return (
     <>
-      <Hero tab="splits" />
+      <h1 className="font-serif text-4xl tracking-tight sm:text-5xl">Clearance by period and mode</h1>
       {s && (
         <PeriodModeCharts
           periods={s.periods}
@@ -170,7 +170,6 @@ export function SplitsView({ d }: { d: Dashboard }) {
           modes={s.modes}
           yogs={d.overview.options.yogs}
           names={Object.fromEntries(Object.entries(SPLIT_SHORT).map(([id, short]) => [short, `${short} · ${COMPETENCIES[id]}`]))}
-          index="01"
         />
       )}
     </>
