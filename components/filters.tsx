@@ -1,7 +1,6 @@
 "use client";
 
-import { useRouter } from "next/navigation";
-import { useState, useTransition } from "react";
+import { useState } from "react";
 import { ChevronDownIcon } from "lucide-react";
 import {
   DropdownMenu,
@@ -13,75 +12,6 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Button } from "@/components/ui/button";
-import { Spinner } from "@/components/ui/spinner";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
-
-type Option = { value: string; label: string; href: string };
-
-/** Segmented control that navigates (keeps state in the URL). */
-export function SegmentedNav({ value, options, label }: { value: string; options: Option[]; label: string }) {
-  const router = useRouter();
-  const [pending, start] = useTransition();
-  return (
-    <div className="flex items-center gap-2">
-    {pending && <Spinner className="text-muted-foreground" />}
-    <ToggleGroup
-      aria-label={label}
-      value={[value]}
-      onValueChange={(v: string[]) => {
-        const next = options.find((o) => o.value === v[0]);
-        if (next && next.value !== value) start(() => router.push(next.href, { scroll: false }));
-      }}
-      spacing={0}
-      className="rounded-md border bg-muted/60 p-0.5 data-[pending=true]:opacity-70"
-      data-pending={pending}
-    >
-      {options.map((o) => (
-        <ToggleGroupItem
-          key={o.value}
-          value={o.value}
-          size="sm"
-          className="rounded-[5px]! border-0! px-3 text-muted-foreground data-pressed:bg-card data-pressed:text-foreground data-pressed:shadow-sm aria-pressed:bg-card aria-pressed:text-foreground aria-pressed:shadow-sm"
-        >
-          {o.label}
-        </ToggleGroupItem>
-      ))}
-    </ToggleGroup>
-    </div>
-  );
-}
-
-/** Labelled dropdown that navigates. */
-export function SelectNav({ value, options, label }: { value: string; options: Option[]; label: string }) {
-  const router = useRouter();
-  const [pending, start] = useTransition();
-  return (
-    <div className="flex w-full items-center gap-2 sm:w-auto">
-      <span className="eyebrow shrink-0">{label}</span>
-      {pending && <Spinner className="shrink-0 text-muted-foreground" />}
-      <Select
-        value={value}
-        items={options.map((o) => ({ value: o.value, label: o.label }))}
-        onValueChange={(v) => {
-          const next = options.find((o) => o.value === v);
-          if (next && next.value !== value) start(() => router.push(next.href, { scroll: false }));
-        }}
-      >
-        <SelectTrigger className="w-full min-w-44 bg-card sm:w-auto">
-          <SelectValue />
-        </SelectTrigger>
-        <SelectContent alignItemWithTrigger={false} align="start" className="w-auto min-w-(--anchor-width) max-w-[calc(100vw-2rem)]">
-          {options.map((o) => (
-            <SelectItem key={o.value} value={o.value}>
-              {o.label}
-            </SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
-    </div>
-  );
-}
 
 type MultiOption = { value: string; label: string; short?: string; disabled?: boolean; hint?: string };
 
@@ -96,6 +26,7 @@ export function MultiSelect({
   allLabel,
   onChange,
   pending,
+  allowEmpty = false,
 }: {
   label: string;
   options: MultiOption[];
@@ -103,6 +34,8 @@ export function MultiSelect({
   allLabel: string;
   onChange: (next: string[]) => void;
   pending?: boolean;
+  /** Lets every option be unticked (adds a Clear item); off by default so a filter always has one choice. */
+  allowEmpty?: boolean;
 }) {
   // Local copy so ticks show at once; re-synced when the URL (props) changes.
   const [sel, setSel] = useState(selected);
@@ -121,7 +54,7 @@ export function MultiSelect({
   const toggle = (value: string, on: boolean) =>
     apply(options.map((o) => o.value).filter((v) => (v === value ? on : sel.includes(v))));
 
-  const summary = all ? allLabel : options.filter((o) => sel.includes(o.value)).map((o) => o.short ?? o.label).join(", ");
+  const summary = all ? allLabel : sel.length === 0 ? "None" : options.filter((o) => sel.includes(o.value)).map((o) => o.short ?? o.label).join(", ");
 
   return (
     <div className="flex flex-col gap-1">
@@ -144,6 +77,11 @@ export function MultiSelect({
             <DropdownMenuItem disabled={all} closeOnClick={false} onClick={() => apply(enabled)}>
               Select all
             </DropdownMenuItem>
+            {allowEmpty && (
+              <DropdownMenuItem disabled={sel.length === 0} closeOnClick={false} onClick={() => apply([])}>
+                Clear
+              </DropdownMenuItem>
+            )}
           </DropdownMenuGroup>
           <DropdownMenuSeparator />
           <DropdownMenuGroup>
@@ -153,7 +91,7 @@ export function MultiSelect({
                 <DropdownMenuCheckboxItem
                   key={o.value}
                   checked={on}
-                  disabled={o.disabled || (on && sel.length === 1)}
+                  disabled={o.disabled || (!allowEmpty && on && sel.length === 1)}
                   onCheckedChange={(v) => toggle(o.value, v)}
                 >
                   {o.label}

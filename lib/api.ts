@@ -3,15 +3,9 @@ import { cookies } from "next/headers";
 import { api } from "./server";
 // The page never talks to the database directly.
 
-export const COMPETENCIES: Record<string, string> = {
-  C1: "Programming with Problem Solving (DSA)",
-  C2: "Frontend Development",
-  C3: "Software Engineering Fundamentals",
-  C4: "Backend Development",
-  C5: "System Design",
-  C6: "Aptitude & Professional Skills",
-  C7: "Generative AI Engineering",
-};
+export { COMPETENCIES, FILTER_KEYS, type FilterQuery } from "./shared";
+import type { FilterQuery } from "./shared";
+import type { Tab } from "./tabs";
 
 export type Run = {
   runId: string;
@@ -36,6 +30,7 @@ export type EventIssue = {
   assessment_no: string | null;
   status: string;
   error: string | null;
+  results_link: string | null;
 };
 export type PlacementImport = { importedAt: string; source: string | null; records: number };
 export type LatestMetrics = {
@@ -63,20 +58,12 @@ async function call(path: string) {
   return api.handle(new Request(`http://internal${path}`, { headers: { cookie } }));
 }
 
-async function get<T>(path: string): Promise<T | null> {
-  const res = await call(path);
-  if (res.status === 404) return null;
-  if (!res.ok) throw new Error(`API ${path} returned ${res.status}`);
-  return res.json() as Promise<T>;
-}
-
 /** The signed-in user, or null when the visitor has no valid session. */
 export async function getMe(): Promise<{ username: string } | null> {
   const res = await call("/api/auth/me");
   return res.ok ? res.json() : null;
 }
 
-export const getLatestMetrics = () => get<LatestMetrics>("/api/metrics/latest");
 
 export type Filters = {
   comps: string[];
@@ -127,12 +114,6 @@ export type FunnelStage = {
 };
 export type Funnel = { stages: FunnelStage[]; offPath: Record<string, number> };
 
-/** Global filter keys kept in the URL (everything except tab and grain). */
-export const FILTER_KEYS = ["comps", "yogs", "modes", "online", "from", "to", "attempt", "unev", "active"] as const;
-
-/** Headline, trend and per-competency numbers for the global filters (a query string of FILTER_KEYS). */
-export const getOverview = (grain: "month" | "week", filters: string) =>
-  get<Overview>(`/api/overview?grain=${grain}${filters ? `&${filters}` : ""}`);
 
 export type PeriodColumn = { key: string; label: string };
 export type PeriodSplitRow = { competency: string; mode: string; stage: "Attempted" | "Qualified"; values: (number | null)[] };
@@ -151,9 +132,6 @@ export type Splits = {
   yog: YogGroup[];
 };
 
-export const getSplits = (grain: "month" | "week", filters: string) => get<Splits>(`/api/splits?grain=${grain}${filters ? `&${filters}` : ""}`);
-
-const withFilters = (path: string, filters: string) => `${path}${path.includes("?") ? "&" : "?"}${filters}`.replace(/[?&]$/, "");
 
 export type Bucket = { bucket: string; count: number };
 export type Reattempts = {
@@ -166,16 +144,12 @@ export type Reattempts = {
   daysBetween: { median: number | null; pairs: number };
   range: { from: string | null; to: string | null };
 };
-/** Attempts-to-clear and duration views; comp = one competency, null = all selected. */
-export const getReattempts = (comp: string | null, filters: string) =>
-  get<Reattempts>(withFilters(`/api/reattempts${comp ? `?rcomp=${comp}` : ""}`, filters));
 
 export type FailureSection = { section: string; label: string; count: number; pct: number };
 export type Failures = {
   runId: string;
   competencies: { competency: string; modes: { mode: string; failedAttempts: number; sections: FailureSection[] }[] }[];
 };
-export const getFailures = (filters: string) => get<Failures>(withFilters("/api/failures", filters));
 
 export type StudentRow = {
   candidateId: string;
@@ -188,7 +162,6 @@ export type StudentRow = {
   lastAttempt: string;
   active: boolean;
 };
-export const getStudents = (filters: string) => get<{ runId: string; students: StudentRow[] }>(withFilters("/api/students", filters));
 
 export type Count = { label: string; count: number };
 export type TrOutcome = {
@@ -217,4 +190,31 @@ export type Outcomes = {
   };
   tr: { count: "students" | "interviews"; total: TrOutcome; byCompetency: (TrOutcome & { competency: string })[] };
 };
-export const getOutcomes = (filters: string) => get<Outcomes>(withFilters("/api/outcomes", filters));
+
+/** Everything one dashboard tab needs (POST /api/dashboard). Optional parts depend on the tab. */
+type NoRun<T> = Omit<T, "runId">;
+export type Dashboard = {
+  tab: Tab;
+  latest: LatestMetrics;
+  overview: NoRun<Overview> & { periodsByGrain: Record<"month" | "week", Overview["periods"]> };
+  splits?: NoRun<Splits>;
+  failures?: NoRun<Failures>;
+  reattempts?: { all: NoRun<Reattempts>; byComp: Record<string, NoRun<Reattempts>> };
+  students?: { students: StudentRow[] };
+  outcomes?: NoRun<Outcomes>;
+};
+
+/** Server-side: the bundle for the first render (in-process, with the visitor's session cookie). */
+export async function getDashboard(tab: Tab, filters: FilterQuery = {}): Promise<Dashboard | null> {
+  const cookie = (await cookies()).toString();
+  const res = await api.handle(
+    new Request("http://internal/api/dashboard", {
+      method: "POST",
+      headers: { cookie, "content-type": "application/json" },
+      body: JSON.stringify({ tab, filters }),
+    })
+  );
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error(`API /api/dashboard returned ${res.status}`);
+  return res.json() as Promise<Dashboard>;
+}

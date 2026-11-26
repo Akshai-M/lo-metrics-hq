@@ -1,6 +1,5 @@
 "use client";
 
-import Link from "next/link";
 import { BarChart3, GraduationCap, Layers, LayoutDashboard, LogOut, Table2, UserRound, Activity, Briefcase, Timer, Users } from "lucide-react";
 import { useSignOut } from "@/components/auth-forms";
 import {
@@ -30,7 +29,18 @@ const ICONS: Record<Tab, typeof LayoutDashboard> = {
   health: Activity,
 };
 
-export function AppSidebar({ active, hrefs, user }: { active: Tab; hrefs: Record<Tab, string>; user: string }) {
+/** Tabs switch in the browser (no navigation); hovering a tab preloads its data. */
+export function AppSidebar({
+  active,
+  user,
+  onSelect,
+  onPrefetch,
+}: {
+  active: Tab;
+  user: string;
+  onSelect: (tab: Tab) => void;
+  onPrefetch?: (tab: Tab) => void;
+}) {
   const { setOpenMobile } = useSidebar();
   const signOut = useSignOut();
   return (
@@ -56,7 +66,12 @@ export function AppSidebar({ active, hrefs, user }: { active: Tab; hrefs: Record
                     <SidebarMenuButton
                       isActive={t.key === active}
                       tooltip={t.label}
-                      render={<Link href={hrefs[t.key]} onClick={() => setOpenMobile(false)} />}
+                      onClick={() => {
+                        onSelect(t.key);
+                        setOpenMobile(false);
+                      }}
+                      onMouseEnter={() => onPrefetch?.(t.key)}
+                      onFocus={() => onPrefetch?.(t.key)}
                     >
                       <Icon />
                       <span>{t.label}</span>
@@ -69,9 +84,6 @@ export function AppSidebar({ active, hrefs, user }: { active: Tab; hrefs: Record
         </SidebarGroup>
       </SidebarContent>
       <SidebarFooter className="border-t">
-        <p className="px-2 text-xs text-muted-foreground group-data-[collapsible=icon]:hidden">
-          Online, offline and TR. Internships coming next.
-        </p>
         <SidebarMenu>
           <SidebarMenuItem>
             <div className="flex items-center gap-2 px-2 py-1.5 text-sm group-data-[collapsible=icon]:hidden">

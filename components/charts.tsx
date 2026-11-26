@@ -1,6 +1,5 @@
 "use client";
 
-import Link from "next/link";
 import { ArrowRight, ArrowUpRight } from "lucide-react";
 import { Bar, BarChart, CartesianGrid, ComposedChart, Line, XAxis, YAxis } from "recharts";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
@@ -31,13 +30,13 @@ export function ClearanceTrendChart({
   index,
   title,
   range,
-  splitsHref,
+  onInspect,
 }: {
   points: Point[];
   index: string;
   title: string;
   range: string;
-  splitsHref: string;
+  onInspect: () => void;
 }) {
   const best = points.filter((p) => p.pct !== null && p.attempted >= 20).sort((a, b) => (b.pct ?? 0) - (a.pct ?? 0))[0];
   const dense = points.length > 12;
@@ -112,9 +111,9 @@ export function ClearanceTrendChart({
         ) : (
           <span />
         )}
-        <Link href={splitsHref} className="flex items-center gap-1 font-medium text-primary hover:underline">
+        <button type="button" onClick={onInspect} className="flex items-center gap-1 font-medium text-primary hover:underline">
           Inspect competency &amp; mode splits <ArrowRight className="size-4" />
-        </Link>
+        </button>
       </CardFooter>
     </Card>
   );
