@@ -1,9 +1,7 @@
 /**
  * One metrics run: fetch -> clean -> evaluate -> aggregate -> reconcile -> persist.
- * Also writes audit files to output/ (CSV + summary + report).
+ * Everything is stored in the database: the source cache, the run and its audit files (ft_comp_run_files).
  */
-import { mkdir } from "node:fs/promises";
-import { join } from "node:path";
 import { ensureResults, fetchEvents, loadCachedResult } from "./appsScript";
 import {
   aggregate,
@@ -19,31 +17,22 @@ import {
   type Row,
 } from "./competency";
 import { COMPETENCIES, type CompetencyId } from "./config";
-import { persistRun, type EventRow } from "./store";
+import { cacheGet, persistRun, type EventRow } from "./store";
 import { loadTr } from "./tr";
 
-const OUT_DIR = join(process.cwd(), "output");
-const YOG_FILE = join(process.cwd(), "data", "user_yog.csv"); // export with columns user_id,YOG
 
-/** user_id -> YOG from data/user_yog.csv (empty map if the file is missing). */
+/** user_id -> YOG, from the database (loaded with `bun run yog "<file.csv>"`). */
 async function loadYog(): Promise<Map<string, string>> {
-  const f = Bun.file(YOG_FILE);
-  if (!(await f.exists())) return new Map();
-  const lines = (await f.text()).trim().split(/\r?\n/);
-  const header = lines[0].split(",").map((h) => h.trim().toLowerCase());
-  const idCol = header.indexOf("user_id");
-  const yogCol = header.indexOf("yog");
-  const map = new Map<string, string>();
-  for (const line of lines.slice(1)) {
-    const cells = line.split(",");
-    const id = (cells[idCol] ?? "").trim();
-    const yog = (cells[yogCol] ?? "").trim();
-    if (id && yog) map.set(id, yog);
-  }
-  return map;
+  const saved = await cacheGet<Record<string, string>>("yog", "map");
+  return new Map(Object.entries(saved ?? {}));
 }
 
-export type RunOptions = { refresh?: boolean; refreshErrors?: boolean; persist?: boolean; log?: (m: string) => void };
+export type RunOptions = {
+  refresh?: boolean;
+  persist?: boolean;
+  log?: (m: string) => void;
+  deadline?: number; // epoch ms; past it the run stops with RunPaused and saves nothing
+};
 
 function csv(rows: Record<string, unknown>[]): string {
   if (!rows.length) return "";
@@ -88,14 +77,14 @@ export async function runPipeline(opts: RunOptions = {}) {
   const log = opts.log ?? (() => {});
   const inScope = (e: AssessmentEvent) => competencyForDomain(e.domain) !== null;
 
-  const events = await fetchEvents(!!opts.refresh);
-  await ensureResults(events, inScope, { refresh: !!opts.refresh, refreshErrors: !!opts.refreshErrors }, log);
+  const events = await fetchEvents(log, opts.deadline);
+  await ensureResults(events, inScope, { refresh: !!opts.refresh, deadline: opts.deadline }, log);
 
   const stats: CleanStats = { blankCandidateRowsDropped: 0, duplicateRowsDropped: 0 };
   const pairs: { event: AssessmentEvent; rows: Row[] | null }[] = [];
   const eventRows: EventRow[] = [];
   for (const e of events) {
-    const cached = e.resultsLink && inScope(e) ? await loadCachedResult(e.idx) : null;
+    const cached = e.resultsLink && inScope(e) ? await loadCachedResult(e.resultsLink) : null;
     const rows = cached && "rows" in cached ? cleanRows(cached.rows, stats) : null;
     pairs.push({ event: e, rows });
     const comp = competencyForDomain(e.domain);
@@ -122,7 +111,7 @@ export async function runPipeline(opts: RunOptions = {}) {
     studentsWithYog: new Set(attempts.filter((a) => a.yog).map((a) => a.candidateId)).size,
     studentsWithoutYog: new Set(attempts.filter((a) => !a.yog).map((a) => a.candidateId)).size,
   };
-  const tr = await loadTr(!!opts.refresh, log);
+  const tr = await loadTr(log, opts.deadline);
   for (const t of tr.interviews) t.yog = yogMap.get(t.candidateId) ?? null;
   const trAttempted = tr.interviews.filter((t) => t.attempted);
   const trCoverage = {
@@ -150,46 +139,44 @@ export async function runPipeline(opts: RunOptions = {}) {
   const summaryMd = summaryMarkdown(metrics, checks, cov);
   const report = { gaps, checks, cleaning: stats, coverage: cov, yog: yogCoverage, tr: trCoverage, eventsInScope: cov.inScope, eventsRead: cov.read };
 
-  // Audit files (candidate_id only; no names or phone numbers)
-  await mkdir(OUT_DIR, { recursive: true });
-  await Bun.write(join(OUT_DIR, "summary.md"), summaryMd);
-  await Bun.write(join(OUT_DIR, "run_report.json"), JSON.stringify(report, null, 1));
-  await Bun.write(
-    join(OUT_DIR, "attempts.csv"),
-    csv(attempts.map((a) => ({
-      candidate_id: a.candidateId, competency: a.competency, event_idx: a.eventIdx, domain: a.domain, mode: a.mode,
-      attempted_on: a.attemptedOn, ruleset: a.ruleset ?? "", qualified: a.qualified === null ? "" : a.qualified ? "Y" : "N",
-      failed_sections: a.failed.join(";"), reason: a.reason, sheet_qualified: a.sheetQualified === null ? "" : a.sheetQualified ? "Y" : "N",
-    })))
-  );
-  await Bun.write(
-    join(OUT_DIR, "students.csv"),
-    csv(students.map((s) => {
-      const row: Record<string, unknown> = {
-        candidate_id: s.candidateId, cleared_any: s.clearedAny ? "Y" : "N",
-        competencies_attempted: s.competenciesAttempted, competencies_cleared: s.competenciesCleared,
-      };
-      for (const c of Object.keys(COMPETENCIES) as CompetencyId[]) {
-        const d = s.detail[c];
-        row[`${c}_attempts`] = d?.attempts ?? 0;
-        row[`${c}_first_clear_on`] = d?.firstClearOn ?? "";
-        row[`${c}_reattempts_to_clear`] = d?.reattemptsToClear ?? "";
-      }
-      return row;
-    }))
-  );
-  await Bun.write(join(OUT_DIR, "periodic_matrix.csv"), csv(periods as unknown as Record<string, unknown>[]));
-  await Bun.write(
-    join(OUT_DIR, "tr_interviews.csv"),
-    csv(tr.interviews.map((t) => ({
-      candidate_id: t.candidateId, competency: t.competency, tab: t.tab, interview_on: t.day, status: t.status,
-      attempted: t.attempted ? "Y" : "N", cleared: t.cleared ? "Y" : "N", level: t.level ?? "", verdict: t.verdict ?? "",
-    })))
-  );
-  await Bun.write(join(OUT_DIR, "events.csv"), csv(eventRows as unknown as Record<string, unknown>[]));
+  // Audit files, stored with the run in the database (candidate_id only; no names or phone numbers).
+  const files: Record<string, string> = {
+    "summary.md": summaryMd,
+    "run_report.json": JSON.stringify(report, null, 1),
+    "attempts.csv": csv(
+      attempts.map((a) => ({
+        candidate_id: a.candidateId, competency: a.competency, event_idx: a.eventIdx, domain: a.domain, mode: a.mode,
+        attempted_on: a.attemptedOn, ruleset: a.ruleset ?? "", qualified: a.qualified === null ? "" : a.qualified ? "Y" : "N",
+        failed_sections: a.failed.join(";"), reason: a.reason, sheet_qualified: a.sheetQualified === null ? "" : a.sheetQualified ? "Y" : "N",
+      }))
+    ),
+    "students.csv": csv(
+      students.map((s) => {
+        const row: Record<string, unknown> = {
+          candidate_id: s.candidateId, cleared_any: s.clearedAny ? "Y" : "N",
+          competencies_attempted: s.competenciesAttempted, competencies_cleared: s.competenciesCleared,
+        };
+        for (const c of Object.keys(COMPETENCIES) as CompetencyId[]) {
+          const d = s.detail[c];
+          row[`${c}_attempts`] = d?.attempts ?? 0;
+          row[`${c}_first_clear_on`] = d?.firstClearOn ?? "";
+          row[`${c}_reattempts_to_clear`] = d?.reattemptsToClear ?? "";
+        }
+        return row;
+      })
+    ),
+    "periodic_matrix.csv": csv(periods as unknown as Record<string, unknown>[]),
+    "tr_interviews.csv": csv(
+      tr.interviews.map((t) => ({
+        candidate_id: t.candidateId, competency: t.competency, tab: t.tab, interview_on: t.day, status: t.status,
+        attempted: t.attempted ? "Y" : "N", cleared: t.cleared ? "Y" : "N", level: t.level ?? "", verdict: t.verdict ?? "",
+      }))
+    ),
+    "events.csv": csv(eventRows as unknown as Record<string, unknown>[]),
+  };
 
   let runId: string | null = null;
-  if (opts.persist !== false) runId = await persistRun({ metrics, events: eventRows, attempts, periods, students, tr: tr.interviews, summaryMd, report });
+  if (opts.persist !== false) runId = await persistRun({ metrics, events: eventRows, attempts, periods, students, tr: tr.interviews, summaryMd, report, files });
 
   return { runId, metrics, checks, coverage: cov, cleaning: stats, summaryMd };
 }

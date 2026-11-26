@@ -31,6 +31,25 @@ export function db(): Sql {
 }
 
 const SCHEMA = `
+CREATE TABLE IF NOT EXISTS ft_comp_jobs (
+  job_id uuid PRIMARY KEY,
+  kind text NOT NULL,            -- incremental | full
+  trigger text NOT NULL,         -- dashboard | api
+  status text NOT NULL,          -- running | succeeded | failed
+  started_at timestamptz NOT NULL,
+  finished_at timestamptz,
+  run_id uuid,
+  error text,
+  log jsonb NOT NULL DEFAULT '[]'::jsonb
+);
+-- Copies of what the sheets returned, minus personal fields (kind: events | result | tr | yog).
+CREATE TABLE IF NOT EXISTS ft_comp_source_cache (
+  kind text NOT NULL,
+  key text NOT NULL,
+  fetched_at timestamptz NOT NULL,
+  payload jsonb NOT NULL,
+  PRIMARY KEY (kind, key)
+);
 CREATE TABLE IF NOT EXISTS ft_comp_runs (
   run_id uuid PRIMARY KEY,
   run_at timestamptz NOT NULL,
@@ -44,6 +63,13 @@ CREATE TABLE IF NOT EXISTS ft_comp_runs (
   events_read int,
   summary_md text,
   report jsonb
+);
+-- The audit files of a run (CSV / summary / report), as text. Candidate IDs only, no names or phone numbers.
+CREATE TABLE IF NOT EXISTS ft_comp_run_files (
+  run_id uuid NOT NULL REFERENCES ft_comp_runs(run_id) ON DELETE CASCADE,
+  name text NOT NULL,
+  content text NOT NULL,
+  PRIMARY KEY (run_id, name)
 );
 CREATE TABLE IF NOT EXISTS ft_comp_events (
   run_id uuid NOT NULL REFERENCES ft_comp_runs(run_id) ON DELETE CASCADE,
@@ -123,6 +149,7 @@ export async function persistRun(input: {
   tr: TrInterview[];
   summaryMd: string;
   report: Record<string, unknown>;
+  files: Record<string, string>; // audit files by name (attempts.csv, students.csv, ...)
 }): Promise<string> {
   const sql = db();
   const runId = crypto.randomUUID();
@@ -144,6 +171,12 @@ export async function persistRun(input: {
       report: input.report,
     })}`;
     await insertChunked(tx, "ft_comp_events", input.events.map((e) => ({ run_id: runId, ...e })));
+    await insertChunked(
+      tx,
+      "ft_comp_run_files",
+      Object.entries(input.files).map(([name, content]) => ({ run_id: runId, name, content })),
+      4
+    );
     await insertChunked(
       tx,
       "ft_comp_attempts",
@@ -268,7 +301,7 @@ export async function eventStatus(runId: string) {
 
 export async function eventIssues(runId: string) {
   return db()`
-    SELECT event_idx, competency, domain, mode, assessment_no, status, error FROM ft_comp_events
+    SELECT event_idx, competency, domain, mode, assessment_no, status, error, results_link FROM ft_comp_events
      WHERE run_id = ${runId} AND status IN ('Error', 'No link') ORDER BY event_idx`;
 }
 
@@ -376,4 +409,101 @@ export async function placementImportInfo() {
   const [imp] = await db()`
     SELECT imported_at, source, records FROM ft_placement_imports ORDER BY imported_at DESC LIMIT 1`.catch(() => []);
   return imp ? { importedAt: new Date(imp.imported_at as string).toISOString(), source: imp.source as string | null, records: imp.records as number } : null;
+}
+
+// ---------------------------------------------------------------- source cache + run jobs
+
+let schemaReady: Promise<void> | null = null;
+/** Creates the tables once per process (safe to call from any path). */
+export function ensureSchema() {
+  schemaReady ??= db()
+    .unsafe(SCHEMA)
+    .then(() => undefined)
+    .catch((err) => {
+      schemaReady = null;
+      throw err;
+    });
+  return schemaReady;
+}
+
+export async function cacheGet<T>(kind: string, key: string): Promise<T | null> {
+  await ensureSchema();
+  const rows = await db()`SELECT payload FROM ft_comp_source_cache WHERE kind = ${kind} AND key = ${key}`;
+  return rows.length ? (rows[0].payload as T) : null;
+}
+
+export async function cacheGetAll<T>(kind: string): Promise<Map<string, T>> {
+  await ensureSchema();
+  const rows = await db()`SELECT key, payload FROM ft_comp_source_cache WHERE kind = ${kind}`;
+  return new Map(rows.map((r) => [r.key as string, r.payload as T]));
+}
+
+export async function cachePut(kind: string, key: string, payload: unknown) {
+  await ensureSchema();
+  const json = db().json(payload as postgres.JSONValue);
+  await db()`
+    INSERT INTO ft_comp_source_cache (kind, key, fetched_at, payload) VALUES (${kind}, ${key}, now(), ${json})
+    ON CONFLICT (kind, key) DO UPDATE SET fetched_at = now(), payload = EXCLUDED.payload`;
+}
+
+export type JobRow = {
+  jobId: string;
+  kind: string;
+  trigger: string;
+  status: string; // running | succeeded | partial (paused at the time limit) | failed
+  startedAt: string;
+  finishedAt: string | null;
+  runId: string | null;
+  error: string | null;
+  log: string[];
+};
+
+/** A run still "running" after this long was killed (serverless timeout); it counts as failed. */
+const JOB_STALE_MINUTES = 6; // a hosted run is cut off at 300 s, so 6 minutes means it was killed
+
+/** Starts a job unless one is already running. Returns false when another run is in progress. */
+export async function startJob(jobId: string, kind: string, trigger: string): Promise<boolean> {
+  await ensureSchema();
+  await db()`
+    UPDATE ft_comp_jobs SET status = 'failed', error = 'Run did not finish (timed out)', finished_at = now()
+     WHERE status = 'running' AND started_at < now() - make_interval(mins => ${JOB_STALE_MINUTES})`;
+  const busy = await db()`SELECT 1 FROM ft_comp_jobs WHERE status = 'running' LIMIT 1`;
+  if (busy.length) return false;
+  await db()`INSERT INTO ft_comp_jobs (job_id, kind, trigger, status, started_at) VALUES (${jobId}, ${kind}, ${trigger}, 'running', now())`;
+  return true;
+}
+
+export async function updateJobLog(jobId: string, log: string[]) {
+  const json = db().json(log);
+  await db()`UPDATE ft_comp_jobs SET log = ${json} WHERE job_id = ${jobId}`;
+}
+
+export async function finishJob(jobId: string, status: "succeeded" | "partial" | "failed", runId: string | null, error: string | null, log: string[]) {
+  const json = db().json(log);
+  await db()`
+    UPDATE ft_comp_jobs SET status = ${status}, finished_at = now(), run_id = ${runId}, error = ${error}, log = ${json}
+     WHERE job_id = ${jobId}`;
+}
+
+/** The most recent job (any status). */
+export async function latestJob(): Promise<JobRow | null> {
+  await ensureSchema();
+  const rows = await db()`
+    SELECT job_id, kind, trigger, status, started_at, finished_at, run_id, error, log
+      FROM ft_comp_jobs ORDER BY started_at DESC LIMIT 1`;
+  if (!rows.length) return null;
+  const r = rows[0];
+  const startedAt = new Date(r.started_at as string | Date);
+  const stale = r.status === "running" && Date.now() - startedAt.getTime() > JOB_STALE_MINUTES * 60_000;
+  return {
+    jobId: r.job_id as string,
+    kind: r.kind as string,
+    trigger: r.trigger as string,
+    status: stale ? "failed" : (r.status as string),
+    startedAt: startedAt.toISOString(),
+    finishedAt: r.finished_at ? new Date(r.finished_at as string | Date).toISOString() : null,
+    runId: (r.run_id as string | null) ?? null,
+    error: stale ? "Run did not finish (timed out)" : ((r.error as string | null) ?? null),
+    log: (r.log as string[]) ?? [],
+  };
 }

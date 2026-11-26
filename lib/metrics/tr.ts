@@ -2,11 +2,10 @@
  * TR (technical round) interviews from the post-offline sheet.
  * Only UID, date, status, clearance, level and verdict band are kept (no names or emails, also in the cache).
  */
-import { mkdir } from "node:fs/promises";
-import { join } from "node:path";
 import { TR_ATTEMPTED_STATUSES, TR_CLEARED_VALUE, TR_TABS, type CompetencyId } from "./config";
+import { cacheGet, cachePut } from "./store";
+import { RunPaused, checkBudget, remaining, requestTimeout } from "./budget";
 
-const TR_DIR = join(process.cwd(), "data", "raw", "tr");
 
 export type TrInterview = {
   candidateId: string;
@@ -32,12 +31,12 @@ export function trDay(v: unknown): string | null {
   return Number.isNaN(t) ? null : new Date(t + 330 * 60_000).toISOString().slice(0, 10);
 }
 
-async function fetchTab(tab: string): Promise<TrRow[]> {
+async function fetchTab(tab: string, deadline?: number): Promise<TrRow[]> {
   const url = `${process.env.APPS_SCRIPT_ENDPOINT}?${new URLSearchParams({ action: "postOfflineData", subsheet: tab })}`;
   let last: unknown;
   for (let i = 0; i < 4; i++) {
     try {
-      const res = await fetch(url, { redirect: "follow", signal: AbortSignal.timeout(180_000) });
+      const res = await fetch(url, { redirect: "follow", signal: AbortSignal.timeout(requestTimeout(deadline)) });
       const j = (await res.json()) as { rows?: Record<string, unknown>[]; error?: string };
       if (!Array.isArray(j.rows)) throw new Error(j.error ?? "no rows in response");
       return j.rows.map((r) => ({
@@ -50,6 +49,7 @@ async function fetchTab(tab: string): Promise<TrRow[]> {
       }));
     } catch (err) {
       last = err;
+      if (remaining(deadline) <= 0) throw new RunPaused("Paused at the time limit while reading the TR tabs.");
       await new Promise((r) => setTimeout(r, 2000 * (i + 1)));
     }
   }
@@ -57,19 +57,27 @@ async function fetchTab(tab: string): Promise<TrRow[]> {
 }
 
 /** Reads every TR tab (cached under data/raw/tr unless refresh). */
-export async function loadTr(refresh: boolean, log: (m: string) => void = () => {}) {
-  await mkdir(TR_DIR, { recursive: true });
+/**
+ * Every run re-reads all TR tabs (small), so new and updated interviews are picked up. A tab that
+ * fails falls back to its last saved copy.
+ */
+export async function loadTr(log: (m: string) => void = () => {}, deadline?: number) {
   const interviews: TrInterview[] = [];
   const tabs: { tab: string; rows: number; interviews: number; undated: number }[] = [];
   for (const { competency, tabs: names } of TR_TABS) {
     for (const tab of names) {
-      const file = Bun.file(join(TR_DIR, `${tab.replace(/[^A-Za-z0-9]+/g, "_")}.json`));
       let rows: TrRow[];
-      if (!refresh && (await file.exists())) rows = await file.json();
-      else {
+      checkBudget(deadline, `reading TR tab "${tab}"`);
+      try {
         log(`Fetching TR tab "${tab}"...`);
-        rows = await fetchTab(tab);
-        await Bun.write(file, JSON.stringify(rows));
+        rows = await fetchTab(tab, deadline);
+        await cachePut("tr", tab, rows);
+      } catch (err) {
+        if (err instanceof RunPaused) throw err;
+        const saved = await cacheGet<TrRow[]>("tr", tab);
+        if (!saved) throw err;
+        log(`TR tab "${tab}" failed (${err instanceof Error ? err.message : String(err)}); using the saved copy.`);
+        rows = saved;
       }
       let n = 0;
       let undated = 0;

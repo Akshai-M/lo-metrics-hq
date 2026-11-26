@@ -12,9 +12,6 @@
  *   Placement Type           FULL_TIME | INTERN_CUM_FULL_TIME
  *   Company Type             MNC | STARTUP
  */
-import { join } from "node:path";
-
-const FILE = join(process.cwd(), "data", "placements.csv");
 
 export type Placement = {
   candidateId: string;
@@ -72,7 +69,7 @@ export function placementDay(v: string): string | null {
   return month < 0 ? null : `${m[3]}-${String(month + 1).padStart(2, "0")}-${m[2].padStart(2, "0")}`;
 }
 
-export async function loadPlacements(path = FILE): Promise<{ file: boolean; rows: Placement[]; skipped: number }> {
+export async function loadPlacements(path: string): Promise<{ file: boolean; rows: Placement[]; skipped: number }> {
   const f = Bun.file(path);
   if (!(await f.exists())) return { file: false, rows: [], skipped: 0 };
   const [head, ...body] = parseCsv(await f.text());
