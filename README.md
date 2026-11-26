@@ -18,7 +18,9 @@ lib/api.ts                    page -> Elysia (in-process)
 lib/metrics/config.ts         rules: competencies, section names, cutoffs, date windows, tab rule
 lib/metrics/competency.ts     metric logic
 lib/metrics/appsScript.ts     Apps Script client
-lib/metrics/filters.ts        global filters (URL params -> filtered rows, attempt numbers)
+lib/metrics/filters.ts        global filters (filter fields -> filtered rows, attempt numbers)
+lib/metrics/cache.ts          in-memory cache of the latest run's rows (loaded once per run)
+components/dashboard/         the dashboard UI (runs in the browser; tabs and filters load via POST /api/dashboard)
 lib/metrics/overview.ts       overview numbers for the filtered rows
 lib/metrics/reattempts.ts     reattempts & duration views, failure reasons
 lib/metrics/students.ts       student-wise table
@@ -60,10 +62,13 @@ period, overall and YOG splits, with a level-wise split of TR-cleared students. 
 
 ## Filters (shared by every tab)
 
-One filter bar above every tab; every KPI, chart and table follows it. Kept in the URL
-(`lib/metrics/filters.ts`):
+One filter bar above every tab; every KPI, chart and table follows it. Changes are a draft
+until **Apply**, which loads the current tab with one `POST /api/dashboard` request. Nothing is
+kept in the URL; the last tab and filters are remembered for the browser tab (sessionStorage).
+The Period & mode split tab has no filter bar: its charts have their own filters.
+Field names below are the keys of `filters` in the request body (`lib/metrics/filters.ts`):
 
-| Filter | URL | Default |
+| Filter | Field | Default |
 |---|---|---|
 | Program | (none) | YFT. IRP is shown disabled, "coming soon" |
 | Competency (multi) | `comps=C1,C2` | all with data |
@@ -83,8 +88,8 @@ in the last 30 days up to the latest date in the data (`ACTIVE_DAYS` in `config.
 
 ## YOG file
 
-`data/user_yog.csv` (columns `user_id,YOG`) gives each student's year of graduation for the
-YOG-wise split. To update it, replace the file with a new export and run `bun run refresh`.
+Each student's year of graduation (columns `user_id,YOG`) is stored in the database. To update it,
+run `bun run yog "<path to the export .csv>"`, then `bun run refresh`.
 
 ## Placement data
 
@@ -93,7 +98,7 @@ assessment runs, so `bun run refresh` never touches them. Load or update them wi
 Placed" export:
 
 ```
-bun run placements "<path to the export .csv>"   # or no path: data/placements.csv
+bun run placements "<path to the export .csv>"
 ```
 
 Columns are read by header name: `user id`, `Date of Entry`, `Placement Status`,
@@ -120,10 +125,10 @@ Data health tab shows when it ran and how many records it has.
 bun install
 bun run dev                        # app + API (Next.js on the Bun runtime)
 bun run build && bun run start     # production build, served on Node (same as Vercel)
-bun run refresh                    # recompute metrics from cached sheets and save a run
-bun run refresh --refresh          # re-fetch every sheet first
-bun run refresh --refresh-errors   # re-fetch only sheets that failed
-bun run refresh --no-db            # compute + write output/ only
+bun run refresh                    # incremental: new or unfinished sheets, TR tabs, then save a run
+bun run refresh --refresh          # re-read every sheet first
+bun run refresh --no-db            # compute only, save nothing
+bun run yog "<file.csv>"           # load year of graduation (user_id, YOG) into the database
 bun run placements "<file.csv>"    # load placement data (separate from refresh)
 ```
 
@@ -140,6 +145,7 @@ bun run placements "<file.csv>"    # load placement data (separate from refresh)
 | GET | `/api/failures?<filters>` | failed gated sections per competency and mode |
 | GET | `/api/students?<filters>` | one row per student |
 | GET | `/api/outcomes?<filters>` | pool -> placed, placement mix, TR -> cleared, verdict bands |
+| POST | `/api/dashboard` | `{ tab, filters }` -> everything that tab needs in one response (used by the dashboard) |
 | GET | `/api/runs` | run history |
 | POST | `/api/refresh` | starts a run in the background (202) |
 | GET | `/api/refresh/status` | current / last run state |
@@ -198,4 +204,16 @@ Cleared competencies use `CLEARANCE_STAGE`. Search, sort, 50 per page, CSV of th
 The stored run headline (`ft_comp_runs`, `bun run refresh` output) still uses the pipeline's
 original rule (unevaluable attempts in the denominator, online + offline); the dashboard reproduces
 it with Online + Offline and "Include unevaluable attempts" on. Audit files from the last run are
-in `output/` (candidate IDs only).
+in the database with the run (`ft_comp_run_files`, candidate IDs only).
+
+Nothing is kept on disk: the sheet cache, YOG, placements, run status and the run's audit files are
+all in the database. The hosted app and the terminal read and write the same tables.
+
+## Speed
+
+- The latest run's rows (about 9k) are loaded from Postgres once and kept in memory
+  (`lib/metrics/cache.ts`); every request after that only filters and counts them (10-60 ms).
+  The latest run id is re-checked every 30 s, placements every 60 s, and a run finished by this
+  server clears the cache at once.
+- The page is server-rendered once (Overview); after that tabs and filters load in the browser,
+  one request per tab + filter set, cached in the page and preloaded in the background and on hover.

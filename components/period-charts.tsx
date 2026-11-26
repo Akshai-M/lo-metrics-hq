@@ -1,24 +1,34 @@
 "use client";
 
-import { useState } from "react";
+import { Fragment, useState } from "react";
 import { format, parseISO } from "date-fns";
 import { ArrowRightIcon, CalendarIcon } from "lucide-react";
 import { Bar, CartesianGrid, ComposedChart, LabelList, Line, usePlotArea, XAxis, YAxis } from "recharts";
-import type { PeriodSplit, PeriodSplitRow, Splits } from "@/lib/api";
+import type { ModeCell, PeriodSplit, PeriodSplitRow, Splits } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Calendar } from "@/components/ui/calendar";
-import { Card, CardContent, CardDescription, CardHeader } from "@/components/ui/card";
+import { Card } from "@/components/ui/card";
 import { ChartContainer, type ChartConfig } from "@/components/ui/chart";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { MultiSelect } from "@/components/filters";
 import { Spinner } from "@/components/ui/spinner";
-import { PeriodSplitTable } from "@/components/split-tables";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { fetchDashboard } from "@/lib/dashboard-client";
+import { cn } from "@/lib/utils";
 
 // Same mode colours as the rest of the dashboard; the line uses the darker text shade of the mode.
-const MODE_COLOR: Record<string, string> = { Online: "var(--online)", Offline: "var(--offline)", TR: "var(--tr)" };
-const MODE_LINE: Record<string, string> = { Online: "var(--online-text)", Offline: "var(--offline-text)", TR: "var(--tr-text)" };
+const MODE_COLOR: Record<string, string> = {
+  Online: "var(--online)",
+  Offline: "var(--offline)",
+  TR: "var(--tr)",
+};
+const MODE_LINE: Record<string, string> = {
+  Online: "var(--online-text)",
+  Offline: "var(--offline-text)",
+  TR: "var(--tr-text)",
+};
 type Grain = "month" | "week";
 // % axis: 0-100 sits in the upper part of the plot, the bars below it.
 const PCT_DOMAIN: [number, number] = [-110, 145];
@@ -60,7 +70,19 @@ export function GrainTabs({ value, onChange }: { value: Grain; onChange: (g: Gra
 }
 
 /** One button showing "from -> to"; opens a From calendar and a To calendar side by side. */
-function RangePicker({ from, to, min, max, onChange }: { from: string; to: string; min: string; max: string; onChange: (from: string, to: string) => void }) {
+function RangePicker({
+  from,
+  to,
+  min,
+  max,
+  onChange,
+}: {
+  from: string;
+  to: string;
+  min: string;
+  max: string;
+  onChange: (from: string, to: string) => void;
+}) {
   const [open, setOpen] = useState(false);
   const day = (d: Date) => format(d, "yyyy-MM-dd");
   const side = (label: string, value: string, lo: string, hi: string, set: (d: string) => void) => (
@@ -109,49 +131,59 @@ function RangePicker({ from, to, min, max, onChange }: { from: string; to: strin
  */
 export function PeriodModeCharts({
   periods,
+  overall,
   modes,
   yogs,
   names,
   index = "01",
 }: {
   periods: Splits["periods"];
+  overall: Splits["overall"];
   modes: string[];
   yogs: string[];
   names: Record<string, string>; // short name (DSA) -> full name
   index?: string;
 }) {
   const comps = [...new Set([...periods.month.rows, ...periods.week.rows].map((r) => r.competency))];
+  const overallFor = (c: string) => overall.rows.find((r) => r.competency === c)?.modes;
   return (
-    <Card className="gap-4 rounded-lg">
-      <CardHeader className="flex flex-col gap-1">
-        <div className="flex min-w-0 flex-col gap-1">
-          <div className="eyebrow">{index} — Trend by mode</div>
-          <CardDescription>
-            Bars: qualified students, labelled qualified / attempted. Line: that period&apos;s clearance % (qualified ÷ attempted distinct
-            students). On each dotted line: the difference in clearance % from the previous period (▲ up, ▼ down), coloured by mode.
-          </CardDescription>
-        </div>
-      </CardHeader>
-      <CardContent className="flex flex-col gap-6 px-2 sm:px-4">
-        <PeriodChart title="All competencies" note="Students counted once across competencies" pick={(p) => p.totals} periods={periods} modes={modes} yogs={yogs} />
-        {comps.map((c) => (
-          <PeriodChart key={c} title={names[c] ?? c} pick={(p) => p.rows.filter((r) => r.competency === c)} periods={periods} modes={modes} yogs={yogs} />
-        ))}
-      </CardContent>
-    </Card>
+    <div className="flex flex-col gap-6">
+      <div className="flex min-w-0 flex-col gap-1">
+        <div className="eyebrow">{index} — Trend by mode</div>
+        <p className="max-w-3xl text-sm text-muted-foreground">
+          Bars: qualified students, labelled qualified / attempted. Line: that period&apos;s clearance % (qualified ÷ attempted distinct students). On
+          each dotted line: the difference in clearance % from the previous period (▲ up, ▼ down), coloured by mode.
+        </p>
+      </div>
+      <PeriodChart
+        title="All competencies"
+        note="Students counted once across competencies"
+        pick={(p) => p.totals}
+        overall={overall.total.modes}
+        periods={periods}
+        modes={modes}
+        yogs={yogs}
+      />
+      {comps.map((c) => (
+        <PeriodChart
+          key={c}
+          title={names[c] ?? c}
+          pick={(p) => p.rows.filter((r) => r.competency === c)}
+          overall={overallFor(c)}
+          periods={periods}
+          modes={modes}
+          yogs={yogs}
+        />
+      ))}
+    </div>
   );
-}
-
-/** The period table with its own Monthly / Weekly switch. */
-export function PeriodTable({ periods, index }: { periods: Splits["periods"]; index?: string }) {
-  const [grain, setGrain] = useState<Grain>("month");
-  return <PeriodSplitTable split={periods[grain]} index={index} action={<GrainTabs value={grain} onChange={setGrain} />} />;
 }
 
 function PeriodChart({
   title,
   note,
   pick,
+  overall,
   periods,
   modes,
   yogs,
@@ -159,6 +191,7 @@ function PeriodChart({
   title: string;
   note?: string;
   pick: (p: PeriodSplit) => PeriodSplitRow[];
+  overall?: Record<string, ModeCell>;
   periods: Splits["periods"];
   modes: string[];
   yogs: string[];
@@ -183,9 +216,11 @@ function PeriodChart({
     else if (draft.yogs.join() !== applied.yogs.join() || !byYog) {
       setLoading(true);
       try {
-        const res = await fetch(`/api/splits?online=1&yogs=${encodeURIComponent(draft.yogs.join(","))}`, { credentials: "same-origin" });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        setByYog(((await res.json()) as Splits).periods);
+        const bundle = await fetchDashboard("splits", {
+          yogs: draft.yogs.join(","),
+        });
+        if (!bundle.splits) throw new Error("no data");
+        setByYog(bundle.splits.periods);
       } catch (e) {
         setLoading(false);
         setError(`Could not load data for the selected YOG (${e instanceof Error ? e.message : "error"}).`);
@@ -205,27 +240,49 @@ function PeriodChart({
     return end >= from && start <= to;
   };
 
-  // Weekly view: monthly numbers per mode for the same filters, shown beside the chart.
+  // Monthly numbers per mode for the same filters, shown below the chart (same for Monthly and Weekly).
   const monthSplit = (byYog ?? periods).month;
   const monthRows = pick(monthSplit);
   const lastPct = new Map<string, number>();
-  const monthly =
-    grain !== "week"
-      ? []
-      : monthSplit.columns.flatMap((c, i) => {
-          const [start, end] = columnRange(c.key, "month");
-          const cells = shown.flatMap((m) => {
-            const att = monthRows.find((r) => r.mode === m && r.stage === "Attempted")?.values[i] ?? null;
-            if (att === null) return [];
-            const q = monthRows.find((r) => r.mode === m && r.stage === "Qualified")?.values[i] ?? 0;
-            const pct = att ? Math.round((1000 * q) / att) / 10 : null;
-            const prev = lastPct.get(m);
-            if (pct !== null) lastPct.set(m, pct);
-            return [{ mode: m, q, att, pct, change: pct === null || prev === undefined ? null : pct - prev }];
-          });
-          if (end < from || start > to) return [];
-          return cells.length ? [{ label: c.label, cells }] : [];
-        });
+  const monthly = monthSplit.columns.flatMap((c, i) => {
+    const [start, end] = columnRange(c.key, "month");
+    const cells = shown.flatMap((m) => {
+      const att = monthRows.find((r) => r.mode === m && r.stage === "Attempted")?.values[i] ?? null;
+      if (att === null) return [];
+      const q = monthRows.find((r) => r.mode === m && r.stage === "Qualified")?.values[i] ?? 0;
+      const pct = att ? Math.round((1000 * q) / att) / 10 : null;
+      const prev = lastPct.get(m);
+      if (pct !== null) lastPct.set(m, pct);
+      return [
+        {
+          mode: m,
+          q,
+          att,
+          pct,
+          change: pct === null || prev === undefined ? null : pct - prev,
+        },
+      ];
+    });
+    if (end < from || start > to) return [];
+    return cells.length ? [{ label: c.label, cells }] : [];
+  });
+  // Overall per mode across all months (distinct students, from the page's overall split), for this chart's competency.
+  const overallCells = overall
+    ? shown.flatMap((m) => {
+        const o = overall[m];
+        return o && o.attempted > 0
+          ? [
+              {
+                mode: m,
+                q: o.cleared,
+                att: o.attempted,
+                pct: o.clearPct,
+                change: null,
+              },
+            ]
+          : [];
+      })
+    : [];
 
   const points: Point[] = split.columns.flatMap((c, i) => {
     if (!inRange(c.key)) return [];
@@ -245,8 +302,8 @@ function PeriodChart({
   const minWidth = points.length * (shown.length * 58 + 28);
 
   return (
-    <section className="min-w-0 rounded-md border p-3 sm:p-4">
-      <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
+    <Card className="min-w-0 gap-0 rounded-lg py-0">
+      <div className="flex flex-wrap items-start justify-between gap-3 border-b px-4 py-4 sm:px-5">
         <div className="min-w-0">
           <h3 className="text-sm font-medium">{title}</h3>
           {note && <p className="text-xs text-muted-foreground">{note}</p>}
@@ -266,6 +323,7 @@ function PeriodChart({
               <MultiSelect
                 label="YOG"
                 allLabel="All YOGs"
+                allowEmpty
                 selected={draft.yogs}
                 options={yogs.map((y) => ({ value: y, label: y }))}
                 onChange={(next) => setDraft((d) => ({ ...d, yogs: next }))}
@@ -294,94 +352,167 @@ function PeriodChart({
                 </SelectContent>
               </Select>
             </div>
-            <Button disabled={!dirty || loading} onClick={apply} className="w-full sm:w-auto">
+            <Button disabled={!dirty || loading || draft.yogs.length === 0} onClick={apply} className="w-full sm:w-auto">
               {loading && <Spinner />}
               Apply
             </Button>
           </div>
         )}
       </div>
-      {error && <p className="mb-2 text-sm text-destructive">{error}</p>}
-      {!points.length ? (
-        <p className="text-sm text-muted-foreground">No data for this selection.</p>
-      ) : (
-        <>
-          <Legend modes={shown} />
-          <div className="flex flex-col gap-4 xl:flex-row">
-          <div className="min-w-0 flex-1 overflow-x-auto pb-3">
-            <ChartContainer config={config} className="aspect-auto h-[340px] w-full" style={{ minWidth }}>
-              <ComposedChart data={points} margin={{ top: 8, right: 8, left: 8, bottom: 0 }} barGap={4} barCategoryGap="22%">
-                <CartesianGrid vertical={false} strokeDasharray="3 4" stroke="var(--grid)" />
-                <XAxis dataKey="label" tickLine={false} axisLine={false} tickMargin={10} interval={0} />
-                {/* Bars use the lower part of the plot, the % line the upper part, so labels don't collide. */}
-                <YAxis yAxisId="n" hide domain={[0, maxQ * 2.6]} />
-                <YAxis yAxisId="pct" hide domain={PCT_DOMAIN} />
-                {shown.map((m) => (
-                  <Bar key={`${m}_q`} yAxisId="n" dataKey={`${m}_q`} fill={MODE_COLOR[m]} radius={[4, 4, 0, 0]} maxBarSize={44} isAnimationActive={false}>
-                    <LabelList dataKey={`${m}_lbl`} position="top" className="fill-foreground font-mono text-[10px]" />
-                  </Bar>
-                ))}
-                {shown.map((m) => (
-                  <Line
-                    key={`${m}_pct`}
-                    yAxisId="pct"
-                    dataKey={`${m}_pct`}
-                    stroke={MODE_LINE[m]}
-                    strokeWidth={2}
-                    dot={{ r: 4, strokeWidth: 2, fill: "var(--card)" }}
-                    activeDot={false}
-                    connectNulls
-                    isAnimationActive={false}
-                  />
-                ))}
-                <LineLabels points={points} modes={shown} />
-                <Deltas points={points} modes={shown} />
-              </ComposedChart>
-            </ChartContainer>
-          </div>
-          {monthly.length > 0 && <MonthlyPanel months={monthly} />}
-          </div>
-        </>
-      )}
-    </section>
+      <div className="flex flex-col gap-3 p-4 sm:p-5">
+        {error && <p className="text-sm text-destructive">{error}</p>}
+        {!points.length ? (
+          <p className="text-sm text-muted-foreground">No data for this selection.</p>
+        ) : (
+          <>
+            <Legend modes={shown} />
+            <div className="flex flex-col gap-4">
+              <div className="min-w-0 flex-1 overflow-x-auto pb-3">
+                <ChartContainer config={config} className="aspect-auto h-[340px] w-full" style={{ minWidth }}>
+                  <ComposedChart data={points} margin={{ top: 8, right: 8, left: 8, bottom: 0 }} barGap={4} barCategoryGap="22%">
+                    <CartesianGrid vertical={false} strokeDasharray="3 4" stroke="var(--grid)" />
+                    <XAxis dataKey="label" tickLine={false} axisLine={false} tickMargin={10} interval={0} />
+                    {/* Bars use the lower part of the plot, the % line the upper part, so labels don't collide. */}
+                    <YAxis yAxisId="n" hide domain={[0, maxQ * 2.6]} />
+                    <YAxis yAxisId="pct" hide domain={PCT_DOMAIN} />
+                    {shown.map((m) => (
+                      <Bar
+                        key={`${m}_q`}
+                        yAxisId="n"
+                        dataKey={`${m}_q`}
+                        fill={MODE_COLOR[m]}
+                        radius={[4, 4, 0, 0]}
+                        maxBarSize={44}
+                        isAnimationActive={false}
+                      >
+                        <LabelList dataKey={`${m}_lbl`} position="top" className="fill-foreground font-mono text-[10px]" />
+                      </Bar>
+                    ))}
+                    {shown.map((m) => (
+                      <Line
+                        key={`${m}_pct`}
+                        yAxisId="pct"
+                        dataKey={`${m}_pct`}
+                        stroke={MODE_LINE[m]}
+                        strokeWidth={2}
+                        dot={{ r: 4, strokeWidth: 2, fill: "var(--card)" }}
+                        activeDot={false}
+                        connectNulls
+                        isAnimationActive={false}
+                      />
+                    ))}
+                    <LineLabels points={points} modes={shown} />
+                    <Deltas points={points} modes={shown} />
+                  </ComposedChart>
+                </ChartContainer>
+              </div>
+              {(monthly.length > 0 || overallCells.length > 0) && <MonthlyPanel months={monthly} overall={overallCells} modes={shown} />}
+            </div>
+          </>
+        )}
+      </div>
+    </Card>
   );
 }
 
-/** Beside the weekly chart: qualified / attempted and clearance % per month and mode. */
-type MonthCell = { mode: string; q: number; att: number; pct: number | null; change: number | null };
-function MonthlyPanel({ months }: { months: { label: string; cells: MonthCell[] }[] }) {
+/** Below the chart: a table with the overall row first, then one row per month. Per mode: qualified / attempted and clearance %. */
+type MonthCell = {
+  mode: string;
+  q: number;
+  att: number;
+  pct: number | null;
+  change: number | null;
+};
+type Overall = MonthCell[];
+const TEXT_OF: Record<string, string> = {
+  Online: "text-online-text",
+  Offline: "text-offline-text",
+  TR: "text-tr-text",
+};
+const DOT_OF: Record<string, string> = {
+  Online: "bg-online",
+  Offline: "bg-offline",
+  TR: "bg-tr",
+};
+
+function MonthlyPanel({ months, overall, modes }: { months: { label: string; cells: MonthCell[] }[]; overall: Overall; modes: string[] }) {
+  const pick = (cells: MonthCell[], m: string) => cells.find((c) => c.mode === m) ?? null;
+  // Two columns per mode: qualified / attempted, and clearance % (with the change from the previous month).
+  const modeCells = (m: string, cell: MonthCell | null, bordered: boolean, muted = false) => (
+    <Fragment key={m}>
+      <TableCell className={cn("text-right font-mono tabular-nums", bordered && "border-l", muted && "bg-muted/40")}>
+        {cell ? `${cell.q.toLocaleString()} / ${cell.att.toLocaleString()}` : <span className="text-muted-foreground/60">–</span>}
+      </TableCell>
+      <TableCell className={cn("text-right", muted && "bg-muted/40")}>
+        {cell ? (
+          <span className="inline-flex items-center justify-end gap-1.5">
+            {cell.change !== null && (
+              <span
+                className="text-[10px] leading-none"
+                style={{ color: MODE_LINE[cell.mode] }}
+                title={`${cell.change > 0 ? "+" : ""}${cell.change.toFixed(1)}% vs previous month`}
+              >
+                {cell.change > 0 ? "▲" : cell.change < 0 ? "▼" : "="}
+              </span>
+            )}
+            <span className="font-mono font-semibold tabular-nums">{cell.pct === null ? "–" : `${cell.pct}%`}</span>
+          </span>
+        ) : (
+          <span className="text-muted-foreground/60">–</span>
+        )}
+      </TableCell>
+    </Fragment>
+  );
   return (
-    <aside className="shrink-0 rounded-md border bg-muted/30 p-3 xl:max-h-[340px] xl:w-64 xl:overflow-y-auto">
-      <div className="mb-2 flex flex-col gap-0.5">
+    <div className="rounded-md border">
+      <div className="flex flex-col gap-0.5 border-b px-4 py-3">
         <span className="eyebrow">Monthly view</span>
-        <span className="text-[11px] text-muted-foreground">Qualified/Attempted · Clearance %</span>
+        <span className="text-[11px] text-muted-foreground">
+          Qualified / attempted and clearance % per mode. ▲ ▼ = change from the previous month.
+        </span>
       </div>
-      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-1">
-        {months.map((mo) => (
-          <div key={mo.label} className="flex flex-col gap-1">
-            <div className="text-sm font-medium">{mo.label}</div>
-            {mo.cells.map((c) => (
-              <div key={c.mode} className="flex items-center justify-between gap-3 text-xs">
-                <span className="flex items-center gap-1.5 text-muted-foreground">
-                  {/* change in clearance % from the previous month with an exam in this mode */}
-                  <span
-                    className="w-3 text-center text-[10px] leading-none"
-                    style={{ color: MODE_LINE[c.mode] }}
-                    title={c.change === null ? "First month" : `${c.change > 0 ? "+" : ""}${c.change.toFixed(1)}% vs previous month`}
-                  >
-                    {c.change === null ? "–" : c.change > 0 ? "▲" : c.change < 0 ? "▼" : "="}
-                  </span>
-                  {c.mode}
+      <Table className="tabular">
+        <TableHeader className="bg-muted/50">
+          <TableRow className="hover:bg-transparent">
+            <TableHead rowSpan={2} className="sticky left-0 z-10 bg-muted pl-4 align-bottom">
+              Period
+            </TableHead>
+            {modes.map((m, i) => (
+              <TableHead key={m} colSpan={2} className={cn("text-center", i > 0 && "border-l")}>
+                <span className={cn("inline-flex items-center gap-1.5 text-xs font-medium", TEXT_OF[m])}>
+                  <span className={cn("size-2 rounded-full", DOT_OF[m])} />
+                  {m}
                 </span>
-                <span className="font-mono tabular-nums">
-                  {c.q.toLocaleString()}/{c.att.toLocaleString()} · <span className="font-medium">{c.pct === null ? "–" : `${c.pct}%`}</span>
-                </span>
-              </div>
+              </TableHead>
             ))}
-          </div>
-        ))}
-      </div>
-    </aside>
+          </TableRow>
+          <TableRow className="hover:bg-transparent">
+            {modes.map((m, i) => (
+              <Fragment key={m}>
+                <TableHead className={cn("text-right text-xs font-normal text-muted-foreground", i > 0 && "border-l")}>
+                  Qualified / attempted
+                </TableHead>
+                <TableHead className="text-right text-xs font-normal text-muted-foreground">Clearance %</TableHead>
+              </Fragment>
+            ))}
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {overall.length > 0 && (
+            <TableRow className="bg-muted/40 font-semibold hover:bg-muted/40">
+              <TableCell className="sticky left-0 z-10 bg-muted pl-4">Overall</TableCell>
+              {modes.map((m, i) => modeCells(m, pick(overall, m), i > 0, true))}
+            </TableRow>
+          )}
+          {months.map((mo) => (
+            <TableRow key={mo.label}>
+              <TableCell className="sticky left-0 z-10 bg-card pl-4 font-medium">{mo.label}</TableCell>
+              {modes.map((m, i) => modeCells(m, pick(mo.cells, m), i > 0))}
+            </TableRow>
+          ))}
+        </TableBody>
+      </Table>
+    </div>
   );
 }
 
@@ -414,12 +545,22 @@ function LineLabels({ points, modes }: { points: Point[]; modes: string[] }) {
   const band = plot.width / points.length;
   const [lo, hi] = PCT_DOMAIN;
   const yOf = (v: number) => plot.y + (plot.height * (hi - v)) / (hi - lo);
-  const labels: { key: string; x: number; y: number; mode: string; v: number }[] = [];
+  const labels: {
+    key: string;
+    x: number;
+    y: number;
+    mode: string;
+    v: number;
+  }[] = [];
   points.forEach((p, i) => {
     const x = plot.x + (i + 0.5) * band;
     const items = modes
       .filter((m) => p[`${m}_pct`] !== null && p[`${m}_pct`] !== undefined)
-      .map((m) => ({ mode: m, v: Number(p[`${m}_pct`]), dot: yOf(Number(p[`${m}_pct`])) }))
+      .map((m) => ({
+        mode: m,
+        v: Number(p[`${m}_pct`]),
+        dot: yOf(Number(p[`${m}_pct`])),
+      }))
       .sort((a, b) => a.dot - b.dot);
     const placed: number[] = [];
     const hitsLabel = (y: number) => placed.some((py) => Math.abs(py - y) < 13);

@@ -1,11 +1,11 @@
 "use client";
 
-import { useRouter } from "next/navigation";
-import { useState, useTransition } from "react";
+import { useState } from "react";
 import { format, parseISO } from "date-fns";
 import type { DateRange } from "react-day-picker";
 import { CalendarIcon, RotateCcw, SlidersHorizontal } from "lucide-react";
 import type { FilterOptions, Filters } from "@/lib/api";
+import { FILTER_KEYS, type FilterQuery } from "@/lib/shared";
 import { MultiSelect } from "@/components/filters";
 import { Button } from "@/components/ui/button";
 import { Calendar } from "@/components/ui/calendar";
@@ -27,44 +27,81 @@ const PROGRAMS = [
   { value: "YFT", label: "YFT (competency assessments)" },
   { value: "IRP", label: "IRP (internships) · coming soon" },
 ];
-const FILTER_PARAMS = ["comps", "yogs", "modes", "online", "from", "to", "attempt", "unev", "active"];
 
 const day = (d: Date) => format(d, "yyyy-MM-dd");
 const show = (d: string) => format(parseISO(d), "d MMM yyyy");
 
+/** Same reading of the filter fields as the server (lib/metrics/filters.ts), for the draft shown in the bar. */
+function parse(q: FilterQuery, o: FilterOptions): Filters {
+  const pick = (raw: string | undefined, allowed: string[]) => {
+    const chosen = (raw ?? "").split(",").filter((v) => allowed.includes(v));
+    return chosen.length ? allowed.filter((v) => chosen.includes(v)) : [...allowed];
+  };
+  const online = q.online === "1";
+  return {
+    comps: pick(q.comps, o.competencies),
+    yogs: pick(q.yogs, o.yogs),
+    modes: pick(q.modes, online ? o.modes : o.modes.filter((m) => m !== "Online")),
+    online,
+    from: q.from ?? null,
+    to: q.to ?? null,
+    attempt: q.attempt === "first" || q.attempt === "re" ? q.attempt : "all",
+    unevaluable: q.unev === "1",
+    active: q.active === "1",
+  };
+}
+
+const clean = (q: FilterQuery) => Object.fromEntries(FILTER_KEYS.filter((k) => q[k]).map((k) => [k, q[k]])) as FilterQuery;
+const same = (a: FilterQuery, b: FilterQuery) => JSON.stringify(clean(a)) === JSON.stringify(clean(b));
+
 /**
- * Filter bar shared by every tab. All state is in the URL; the server applies it
- * (lib/metrics/filters.ts) to every KPI, chart and table. Inline on large screens,
- * in a sheet behind a "Filters" button on smaller ones.
+ * Filter bar shared by every tab. Changes are a draft until "Apply", which loads the current
+ * tab with them (one POST /api/dashboard request); nothing goes in the URL. Inline on large
+ * screens, in a sheet behind a "Filters" button on smaller ones.
  */
 export function GlobalFilters({
-  query,
-  filters: f,
+  applied,
   options,
   compNames,
+  pending,
+  onApply,
 }: {
-  query: string; // current search params, without "?"
-  filters: Filters;
+  applied: FilterQuery;
   options: FilterOptions;
   compNames: Record<string, string>;
+  pending: boolean;
+  onApply: (filters: FilterQuery) => void;
 }) {
-  const router = useRouter();
-  const [pending, start] = useTransition();
-
-  function set(updates: Record<string, string | null>) {
-    const params = new URLSearchParams(query);
-    for (const [k, v] of Object.entries(updates)) {
-      if (v === null || v === "") params.delete(k);
-      else params.set(k, v);
-    }
-    const q = params.toString();
-    start(() => router.push(q ? `/?${q}` : "/", { scroll: false }));
+  const [draft, setDraft] = useState<FilterQuery>(applied);
+  const [prev, setPrev] = useState(applied);
+  if (prev !== applied) {
+    // Applied filters changed (Apply / Reset): start the draft from them.
+    setPrev(applied);
+    setDraft(applied);
   }
-  // A full selection is the default, so it is dropped from the URL.
+  const [sheetOpen, setSheetOpen] = useState(false);
+  const f = parse(draft, options);
+  const dirty = !same(draft, applied);
+  const activeCount = Object.keys(clean(applied)).length;
+
+  function set(updates: FilterQuery | Record<string, string | null>) {
+    setDraft((d) => {
+      const next: Record<string, string | undefined> = { ...d };
+      for (const [k, v] of Object.entries(updates)) next[k] = v ?? undefined;
+      return clean(next as FilterQuery);
+    });
+  }
+  // A full selection is the default, so it is left out.
   const list = (next: string[], all: string[]) => (all.every((v) => next.includes(v)) ? null : next.join(","));
   const allowedModes = options.modes.filter((m) => f.online || m !== "Online");
-  const active = FILTER_PARAMS.filter((k) => new URLSearchParams(query).has(k)).length;
-  const reset = () => set(Object.fromEntries(FILTER_PARAMS.map((k) => [k, null])));
+  const apply = () => {
+    onApply(clean(draft));
+    setSheetOpen(false);
+  };
+  const reset = () => {
+    onApply({});
+    setSheetOpen(false);
+  };
 
   // Rendered once inline (large screens) and once in the sheet (small screens); p keeps ids unique.
   const controls = (p: string) => (
@@ -90,7 +127,6 @@ export function GlobalFilters({
         selected={f.comps}
         options={options.competencies.map((c) => ({ value: c, label: `${c} ${compNames[c] ?? ""}`, short: c }))}
         onChange={(next) => set({ comps: list(next, options.competencies) })}
-        pending={pending}
       />
       <MultiSelect
         label="YOG"
@@ -98,7 +134,6 @@ export function GlobalFilters({
         selected={f.yogs}
         options={options.yogs.map((y) => ({ value: y, label: y }))}
         onChange={(next) => set({ yogs: list(next, options.yogs) })}
-        pending={pending}
       />
       <MultiSelect
         label="Mode"
@@ -112,17 +147,10 @@ export function GlobalFilters({
           hint: m === "Online" && !f.online ? "turn on “Include online”" : undefined,
         }))}
         onChange={(next) => set({ modes: list(next, allowedModes) })}
-        pending={pending}
       />
 
       <Field label="Date range">
-        <DateRangePicker
-          from={f.from}
-          to={f.to}
-          min={options.minDay}
-          max={options.maxDay}
-          onApply={(from, to) => set({ from, to })}
-        />
+        <DateRangePicker from={f.from} to={f.to} min={options.minDay} max={options.maxDay} onApply={(from, to) => set({ from, to })} />
       </Field>
 
       <Field label="Attempt type">
@@ -168,23 +196,31 @@ export function GlobalFilters({
     </>
   );
 
+  const applyButton = (className?: string) => (
+    <Button onClick={apply} disabled={!dirty || pending} className={className}>
+      {pending && <Spinner />}
+      Apply
+    </Button>
+  );
+
   return (
     <section aria-label="Filters" className="rounded-lg border bg-card px-3 py-2.5 lg:px-4 lg:py-3">
       {/* Small screens: a button that opens the filters in a sheet. */}
       <div className="flex items-center gap-2 lg:hidden">
-        <Sheet>
+        <Sheet open={sheetOpen} onOpenChange={setSheetOpen}>
           <SheetTrigger render={<Button variant="outline" size="sm" />}>
-            <SlidersHorizontal /> Filters{active > 0 && ` (${active})`}
+            <SlidersHorizontal /> Filters{activeCount > 0 && ` (${activeCount})`}
           </SheetTrigger>
           <SheetContent side="right" className="w-full overflow-y-auto sm:max-w-md">
             <SheetHeader>
               <SheetTitle>Filters</SheetTitle>
-              <SheetDescription>Every number on every tab follows these.</SheetDescription>
+              <SheetDescription>Every number on every tab follows these. Changes load when you press Apply.</SheetDescription>
             </SheetHeader>
             <div className="flex flex-col gap-4 px-4 pb-6">
               {controls("sheet")}
-              {active > 0 && (
-                <Button variant="outline" onClick={reset}>
+              {applyButton("w-full")}
+              {activeCount > 0 && (
+                <Button variant="outline" onClick={reset} disabled={pending}>
                   <RotateCcw /> Reset filters
                 </Button>
               )}
@@ -192,7 +228,8 @@ export function GlobalFilters({
           </SheetContent>
         </Sheet>
         <span className="min-w-0 truncate text-xs text-muted-foreground">
-          {f.modes.join(" + ")} · {f.comps.length === options.competencies.length ? "all competencies" : f.comps.join(", ")}
+          {parse(applied, options).modes.join(" + ")} ·{" "}
+          {parse(applied, options).comps.length === options.competencies.length ? "all competencies" : parse(applied, options).comps.join(", ")}
         </span>
         {pending && <Spinner className="ml-auto shrink-0 text-muted-foreground" />}
       </div>
@@ -201,12 +238,12 @@ export function GlobalFilters({
       <div className="hidden flex-wrap items-end gap-x-5 gap-y-3 lg:flex">
         {controls("bar")}
         <div className="ml-auto flex items-center gap-2 self-center">
-          {pending && <Spinner className="text-muted-foreground" />}
-          {active > 0 && (
-            <Button variant="link" size="sm" onClick={reset}>
+          {activeCount > 0 && (
+            <Button variant="link" size="sm" onClick={reset} disabled={pending}>
               <RotateCcw /> Reset filters
             </Button>
           )}
+          {applyButton()}
         </div>
       </div>
     </section>
@@ -222,7 +259,7 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
   );
 }
 
-/** Date range in a popover calendar; applied to the URL with "Apply". */
+/** Date range in a popover calendar; "Done" sets it in the draft filters (the bar's Apply button loads it). */
 function DateRangePicker({
   from,
   to,
@@ -282,7 +319,7 @@ function DateRangePicker({
               setOpen(false);
             }}
           >
-            Apply
+            Done
           </Button>
         </div>
       </PopoverContent>

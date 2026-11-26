@@ -218,11 +218,11 @@ export const TR_ATTEMPTED_STATUSES = ["completed"];
 /** Cleared = "Clearance Status" is exactly this. */
 export const TR_CLEARED_VALUE = "Cleared";
 /**
- * How TR is counted in the splits:
- *  "students"   distinct students per cell, same as online and offline (default)
- *  "interviews" one per interview row, the way the team's TR sheet counts
+ * How TR is counted everywhere (splits, trend, outcomes):
+ *  "students"   distinct students per cell, same as online and offline
+ *  "interviews" one per interview row, the way the team's TR sheet counts (current setting)
  */
-export const TR_COUNT: "students" | "interviews" = "students";
+export const TR_COUNT: "students" | "interviews" = "interviews";
 
 /**
  * "Active student" (ASSUMED, not confirmed by the team): a student with at least one attempt or

@@ -8,7 +8,8 @@
     "start": "next start",
     "lint": "eslint",
     "refresh": "bun run lib/metrics/cli.ts",
-    "placements": "bun run lib/metrics/import-placements.ts"
+    "placements": "bun run lib/metrics/import-placements.ts",
+    "yog": "bun run lib/metrics/import-yog.ts"
   },
   "dependencies": {
     "@base-ui/react": "^1.9.0",

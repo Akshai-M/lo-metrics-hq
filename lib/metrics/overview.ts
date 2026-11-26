@@ -104,6 +104,9 @@ export function stageRows(rows: Row[], stage: Stage) {
  * 7-day range, bucketed by the date of the attempt at that stage ("both": cleared is bucketed by
  * the TR date).
  */
+/** The clearance-stage trend for one grain (the overview returns month and week together). */
+export const stageTrend = (rows: Row[], grain: "month" | "week") => stagePeriods(rows, CLEARANCE_STAGE, grain);
+
 function stagePeriods(rows: Row[], stage: Stage, grain: "month" | "week") {
   const bucket = (day: string) => (grain === "month" ? `${day.slice(0, 7)}-01` : weekBucket(day).start);
   const { attempts, clears } = stageRows(rows, stage);
