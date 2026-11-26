@@ -11,8 +11,10 @@
  *   GET  /api/students?<filters>        one row per student
  *   GET  /api/outcomes?<filters>        assessed pool -> placed, placement mix, TR -> cleared, verdict bands
  *        <filters>: comps, yogs, modes, online, from, to, attempt, unev, active (see lib/metrics/filters.ts)
+ *   POST /api/dashboard                 { tab, filters } -> everything that tab needs in one response
+ *                                       (the dashboard page uses this; filters as above, in the body)
  *   GET  /api/runs                      run history
- *   POST /api/refresh                   start a metrics run in the background ({ refresh?, refreshErrors? })
+*   POST /api/refresh                   run a metrics refresh inside the request ({ refresh? })
  *   GET  /api/refresh/status            state of the current / last run
  *   POST /api/auth/login                { username, password } -> session cookie
  *   POST /api/auth/logout
@@ -23,14 +25,15 @@
  */
 import { Elysia, t } from "elysia";
 import { runPipeline } from "./metrics/pipeline";
-import { competencyBreakdown, eventIssues, eventStatus, latestRun, periods, runHistory } from "./metrics/store";
+import { RunPaused } from "./metrics/budget";
+import { finishJob, latestJob, periods, runHistory, startJob, updateJobLog } from "./metrics/store";
+import { cachedLatestRun, cachedPlacements, cachedRows, cachedRunDetails, clearCaches } from "./metrics/cache";
 import { overallSplit, periodSplit, trLevelSplit, yogSplit } from "./metrics/splits";
-import { overview, stages } from "./metrics/overview";
-import { applyFilters, loadRows } from "./metrics/filters";
+import { overview, stages, stageTrend } from "./metrics/overview";
+import { applyFilters, type FilterQuery, type Row } from "./metrics/filters";
 import { failureReasons, reattemptViews } from "./metrics/reattempts";
 import { studentRows } from "./metrics/students";
 import { placementViews, trViews } from "./metrics/outcomes";
-import { latestPlacements, placementImportInfo } from "./metrics/store";
 import { COMPETENCIES, TR_COUNT } from "./metrics/config";
 import {
   SESSION_COOKIE,
@@ -43,34 +46,55 @@ import {
   sessionUser,
 } from "./auth";
 
-type JobState = {
-  running: boolean;
-  startedAt: string | null;
-  finishedAt: string | null;
-  lastRunId: string | null;
-  lastError: string | null;
-  log: string[];
-};
-const job: JobState = { running: false, startedAt: null, finishedAt: null, lastRunId: null, lastError: null, log: [] };
+const LOG_KEEP = 200;
+/** Time one run may use. The hosted function is cut off at 300 s; the rest is left for in-flight requests. */
+const RUN_BUDGET_MS = 180_000;
+const LOG_SAVE_EVERY_MS = 1500;
 
-function startRun(opts: { refresh?: boolean; refreshErrors?: boolean }) {
-  job.running = true;
-  job.startedAt = new Date().toISOString();
-  job.finishedAt = null;
-  job.lastError = null;
-  job.log = [];
-  runPipeline({ ...opts, log: (m) => job.log.push(m) })
-    .then((r) => {
-      job.lastRunId = r.runId;
-      job.log.push(`Saved run ${r.runId}: ${r.metrics.clearancePct}% (${r.metrics.clearedStudents} / ${r.metrics.attemptedStudents})`);
-    })
-    .catch((err) => {
-      job.lastError = err instanceof Error ? err.message : String(err);
-    })
-    .finally(() => {
-      job.running = false;
-      job.finishedAt = new Date().toISOString();
-    });
+/**
+ * One metrics run, recorded in ft_comp_jobs (so the status survives restarts and works on Vercel).
+ * Runs inline in the request: a hosted function is only alive while its request is.
+ */
+async function runJob(trigger: "dashboard" | "api", opts: { refresh?: boolean }) {
+  const jobId = crypto.randomUUID();
+  if (!(await startJob(jobId, opts.refresh ? "full" : "incremental", trigger))) return { conflict: true as const };
+
+  const log: string[] = [];
+  let chain: Promise<void> = Promise.resolve();
+  let lastSave = 0;
+  const save = (force: boolean) => {
+    const now = Date.now();
+    if (!force && now - lastSave < LOG_SAVE_EVERY_MS) return;
+    lastSave = now;
+    const lines = log.slice(-LOG_KEEP);
+    chain = chain.then(() => updateJobLog(jobId, lines)).catch(() => {});
+  };
+  const push = (m: string) => {
+    log.push(m);
+    save(false);
+  };
+  try {
+    const r = await runPipeline({ refresh: opts.refresh, log: push, deadline: Date.now() + RUN_BUDGET_MS });
+    clearCaches(); // serve the new run straight away
+    push(`Saved run ${r.runId}: ${r.metrics.clearancePct}% (${r.metrics.clearedStudents} / ${r.metrics.attemptedStudents})`);
+    await chain;
+    await finishJob(jobId, "succeeded", r.runId ?? null, null, log.slice(-LOG_KEEP));
+    return { conflict: false as const, jobId, runId: r.runId ?? null };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (err instanceof RunPaused) {
+      // Nothing is saved: the sheets read so far stay cached, and the next run carries on.
+      const text = `${message} Click Refresh again to continue.`;
+      push(`Paused: ${text}`);
+      await chain;
+      await finishJob(jobId, "partial", null, text, log.slice(-LOG_KEEP));
+      return { conflict: false as const, jobId, partial: text };
+    }
+    push(`Failed: ${message}`);
+    await chain;
+    await finishJob(jobId, "failed", null, message, log.slice(-LOG_KEEP));
+    return { conflict: false as const, jobId, error: message };
+  }
 }
 
 const scopes = ["ALL", ...Object.keys(COMPETENCIES)];
@@ -89,6 +113,95 @@ const filterQuery = t.Object({
   active: t.Optional(t.String()),
   rcomp: t.Optional(t.String()),
 });
+
+// ---- Views, built from a run's cached rows (shared by the GET routes and POST /dashboard) ----
+
+type Grain = "month" | "week";
+
+function overviewView(all: Row[], q: FilterQuery, grain: Grain) {
+  const { filters, options, rows, unevaluableRows } = applyFilters(all, q);
+  return {
+    options,
+    filters,
+    ...overview(rows, unevaluableRows, filters.comps, grain),
+    periodsByGrain: { month: stageTrend(rows, "month"), week: stageTrend(rows, "week") },
+    ...stages(rows, filters.comps, filters.modes),
+  };
+}
+
+function splitsView(all: Row[], q: FilterQuery, grain: Grain) {
+  const { filters, rows } = applyFilters(all, q);
+  const { comps, modes } = filters;
+  // TR counted per student (same as online / offline) or per interview, see TR_COUNT in config.
+  const attempts = rows.map((r, i) => ({
+    ...r,
+    candidateId: r.mode === "TR" && TR_COUNT === "interviews" ? `${r.candidateId}#${i}` : r.candidateId,
+  }));
+  const tr = attempts.filter((r) => r.mode === "TR").map((r) => ({ ...r, cleared: !!r.qualified }));
+  const month = periodSplit(attempts, "month", comps, modes);
+  const week = periodSplit(attempts, "week", comps, modes);
+  return {
+    trCount: TR_COUNT,
+    modes,
+    period: grain === "week" ? week : month,
+    // Both grains for the period charts (each chart has its own Weekly / Monthly switch).
+    periods: { month, week },
+    overall: { ...overallSplit(attempts, comps, modes), trLevels: modes.includes("TR") ? trLevelSplit(tr, comps) : [] },
+    yog: yogSplit(attempts, comps, modes),
+  };
+}
+
+/** All selected competencies together, plus each one (the competency picker switches between them without a request). */
+function reattemptsView(all: Row[], q: FilterQuery) {
+  const { filters, rows } = applyFilters(all, q);
+  return { all: reattemptViews(rows, null), byComp: Object.fromEntries(filters.comps.map((c) => [c, reattemptViews(rows, c)])) };
+}
+
+function failuresView(all: Row[], q: FilterQuery) {
+  const { filters, rows } = applyFilters(all, q);
+  return { competencies: failureReasons(rows, filters.comps, filters.modes) };
+}
+
+function studentsView(all: Row[], q: FilterQuery) {
+  const { rows, isActive } = applyFilters(all, q);
+  return { students: studentRows(rows, isActive) };
+}
+
+async function outcomesView(all: Row[], q: FilterQuery) {
+  const placements = await cachedPlacements();
+  const { filters, rows } = applyFilters(all, q);
+  return {
+    placementImport: { importedAt: placements.importedAt, source: placements.source, records: placements.rows.length },
+    placement: placementViews(rows, all, placements.rows, filters.comps),
+    tr: trViews(rows, filters.comps),
+  };
+}
+
+const TABS = ["overview", "splits", "yog", "competency", "reattempts", "outcomes", "students", "health"] as const;
+type DashTab = (typeof TABS)[number];
+const FILTER_FIELDS = ["comps", "yogs", "modes", "online", "from", "to", "attempt", "unev", "active"] as const;
+
+/**
+ * Everything one dashboard tab needs, in one response. The Period & mode split tab ignores the
+ * global filters (it always includes Online); its charts send their own YOG choice.
+ */
+async function dashboardView(tab: DashTab, q: FilterQuery) {
+  const run = await cachedLatestRun();
+  if (!run) return null;
+  const [all, info] = await Promise.all([cachedRows(run.runId), cachedRunDetails(run.runId)]);
+  const fq = tab === "splits" ? { online: "1", ...(q.yogs ? { yogs: q.yogs } : {}) } : q;
+  const out: Record<string, unknown> = {
+    tab,
+    latest: { run, competencies: info.competencies, eventStatus: info.eventStatus, issues: info.issues, placements: info.placements },
+    overview: overviewView(all, fq, "month"),
+  };
+  if (tab === "splits" || tab === "yog" || tab === "competency") out.splits = splitsView(all, fq, "month");
+  if (tab === "competency") out.failures = failuresView(all, fq);
+  if (tab === "reattempts") out.reattempts = reattemptsView(all, fq);
+  if (tab === "students") out.students = studentsView(all, fq);
+  if (tab === "overview" || tab === "outcomes") out.outcomes = await outcomesView(all, fq);
+  return out;
+}
 
 const PUBLIC = new Set(["/api/health", "/api/auth/login"]);
 const tokenOf = (cookie: Record<string, { value?: unknown }>) => {
@@ -133,20 +246,14 @@ export const api = new Elysia({ prefix: "/api" })
   })
   .get("/auth/me", ({ user }) => ({ username: user!.username }))
   .get("/metrics/latest", async ({ status }) => {
-    const run = await latestRun();
+    const run = await cachedLatestRun();
     if (!run) return status(404, { error: "No metrics run yet. POST /api/refresh to load data." });
-    const [competencies, statuses, issues, placements] = await Promise.all([
-      competencyBreakdown(run.runId),
-      eventStatus(run.runId),
-      eventIssues(run.runId),
-      placementImportInfo(),
-    ]);
-    return { run, competencies, eventStatus: statuses, issues, placements };
+    return { run, ...(await cachedRunDetails(run.runId)) };
   })
   .get(
     "/periods",
     async ({ query, status }) => {
-      const run = await latestRun();
+      const run = await cachedLatestRun();
       if (!run) return status(404, { error: "No metrics run yet." });
       const grain = query.grain ?? "month";
       const scope = scopes.includes(query.scope ?? "ALL") ? (query.scope ?? "ALL") : "ALL";
@@ -162,102 +269,99 @@ export const api = new Elysia({ prefix: "/api" })
   .get(
     "/overview",
     async ({ query, status }) => {
-      const run = await latestRun();
+      const run = await cachedLatestRun();
       if (!run) return status(404, { error: "No metrics run yet." });
-      const { filters, options, rows, unevaluableRows } = applyFilters(await loadRows(run.runId), query);
-      return {
-        runId: run.runId,
-        options,
-        filters,
-        ...overview(rows, unevaluableRows, filters.comps, query.grain ?? "month"),
-        ...stages(rows, filters.comps, filters.modes),
-      };
+      return { runId: run.runId, ...overviewView(await cachedRows(run.runId), query, query.grain ?? "month") };
     },
     { query: filterQuery }
   )
   .get(
     "/splits",
     async ({ query, status }) => {
-      const run = await latestRun();
+      const run = await cachedLatestRun();
       if (!run) return status(404, { error: "No metrics run yet." });
-      const { filters, rows } = applyFilters(await loadRows(run.runId), query);
-      const { comps, modes } = filters;
-      // TR counted per student (same as online / offline) or per interview, see TR_COUNT in config.
-      const attempts = rows.map((r, i) => ({
-        ...r,
-        candidateId: r.mode === "TR" && TR_COUNT === "interviews" ? `${r.candidateId}#${i}` : r.candidateId,
-      }));
-      const tr = attempts.filter((r) => r.mode === "TR").map((r) => ({ ...r, cleared: !!r.qualified }));
-      return {
-        runId: run.runId,
-        trCount: TR_COUNT,
-        modes,
-        period: periodSplit(attempts, query.grain ?? "month", comps, modes),
-        // Both grains for the period charts (each chart has its own Weekly / Monthly switch).
-        periods: { month: periodSplit(attempts, "month", comps, modes), week: periodSplit(attempts, "week", comps, modes) },
-        overall: { ...overallSplit(attempts, comps, modes), trLevels: modes.includes("TR") ? trLevelSplit(tr, comps) : [] },
-        yog: yogSplit(attempts, comps, modes),
-      };
+      return { runId: run.runId, ...splitsView(await cachedRows(run.runId), query, query.grain ?? "month") };
     },
     { query: filterQuery }
   )
   .get(
     "/reattempts",
     async ({ query, status }) => {
-      const run = await latestRun();
+      const run = await cachedLatestRun();
       if (!run) return status(404, { error: "No metrics run yet." });
-      const { filters, rows } = applyFilters(await loadRows(run.runId), query);
-      const comp = query.rcomp && filters.comps.includes(query.rcomp) ? query.rcomp : null;
-      return { runId: run.runId, ...reattemptViews(rows, comp) };
+      const v = reattemptsView(await cachedRows(run.runId), query);
+      return { runId: run.runId, ...((query.rcomp && v.byComp[query.rcomp]) || v.all) };
     },
     { query: filterQuery }
   )
   .get(
     "/failures",
     async ({ query, status }) => {
-      const run = await latestRun();
+      const run = await cachedLatestRun();
       if (!run) return status(404, { error: "No metrics run yet." });
-      const { filters, rows } = applyFilters(await loadRows(run.runId), query);
-      return { runId: run.runId, competencies: failureReasons(rows, filters.comps, filters.modes) };
+      return { runId: run.runId, ...failuresView(await cachedRows(run.runId), query) };
     },
     { query: filterQuery }
   )
   .get(
     "/students",
     async ({ query, status }) => {
-      const run = await latestRun();
+      const run = await cachedLatestRun();
       if (!run) return status(404, { error: "No metrics run yet." });
-      const { rows, isActive } = applyFilters(await loadRows(run.runId), query);
-      return { runId: run.runId, students: studentRows(rows, isActive) };
+      return { runId: run.runId, ...studentsView(await cachedRows(run.runId), query) };
     },
     { query: filterQuery }
   )
   .get(
     "/outcomes",
     async ({ query, status }) => {
-      const run = await latestRun();
+      const run = await cachedLatestRun();
       if (!run) return status(404, { error: "No metrics run yet." });
-      const [all, placements] = await Promise.all([loadRows(run.runId), latestPlacements()]);
-      const { filters, rows } = applyFilters(all, query);
-      return {
-        runId: run.runId,
-        placementImport: { importedAt: placements.importedAt, source: placements.source, records: placements.rows.length },
-        placement: placementViews(rows, all, placements.rows, filters.comps),
-        tr: trViews(rows, filters.comps),
-      };
+      return { runId: run.runId, ...(await outcomesView(await cachedRows(run.runId), query)) };
     },
     { query: filterQuery }
+  )
+  .post(
+    "/dashboard",
+    async ({ body, status }) => {
+      const v = await dashboardView(body.tab, body.filters ?? {});
+      return v ?? status(404, { error: "No metrics run yet." });
+    },
+    {
+      body: t.Object({
+        tab: t.Union(TABS.map((x) => t.Literal(x))),
+        filters: t.Optional(t.Partial(t.Object(Object.fromEntries(FILTER_FIELDS.map((k) => [k, t.String({ maxLength: 500 })])) as Record<(typeof FILTER_FIELDS)[number], ReturnType<typeof t.String>>))),
+      }),
+    }
   )
   .get("/runs", () => runHistory())
   .post(
     "/refresh",
-    ({ body, status }) => {
-      if (job.running) return status(409, { error: "A run is already in progress", startedAt: job.startedAt });
-      startRun({ refresh: body?.refresh, refreshErrors: body?.refreshErrors });
-      return status(202, { started: true, startedAt: job.startedAt });
+    async ({ body, request, status }) => {
+      const trigger = request.headers.get("x-refresh-token") ? "api" : "dashboard";
+      const result = await runJob(trigger, { refresh: body?.refresh });
+      if (result.conflict) return status(409, { error: "A run is already in progress" });
+      if ("partial" in result) return { ok: false, partial: true, message: result.partial, jobId: result.jobId };
+      if ("error" in result) return status(500, { error: result.error, jobId: result.jobId });
+      return { ok: true, jobId: result.jobId, runId: result.runId };
     },
     {
-      body: t.Optional(t.Object({ refresh: t.Optional(t.Boolean()), refreshErrors: t.Optional(t.Boolean()) })),
+      body: t.Optional(t.Object({ refresh: t.Optional(t.Boolean()) })),
     }
   )
-  .get("/refresh/status", () => ({ ...job, log: job.log.slice(-50) }));
+  .get("/refresh/status", async () => {
+    const j = await latestJob();
+    if (!j) return { running: false, partial: false, jobId: null, kind: null, startedAt: null, finishedAt: null, lastRunId: null, lastError: null, log: [] };
+    return {
+      running: j.status === "running",
+      partial: j.status === "partial",
+      jobId: j.jobId,
+      kind: j.kind,
+      trigger: j.trigger,
+      startedAt: j.startedAt,
+      finishedAt: j.finishedAt,
+      lastRunId: j.runId,
+      lastError: j.error,
+      log: j.log,
+    };
+  });
