@@ -34,6 +34,7 @@ import { applyFilters, type FilterQuery, type Row } from "./metrics/filters";
 import { failureReasons, reattemptViews } from "./metrics/reattempts";
 import { studentRows } from "./metrics/students";
 import { placementViews, trViews } from "./metrics/outcomes";
+import { LEVEL_ORDER, UNDER_CONSIDERATION, VERDICT_ORDER, pipeline, tiers } from "./metrics/flow";
 import { COMPETENCIES, TR_COUNT } from "./metrics/config";
 import {
   SESSION_COOKIE,
@@ -118,14 +119,17 @@ const filterQuery = t.Object({
 
 type Grain = "month" | "week";
 
-function overviewView(all: Row[], q: FilterQuery, grain: Grain) {
+async function overviewView(all: Row[], q: FilterQuery, grain: Grain) {
   const { filters, options, rows, unevaluableRows } = applyFilters(all, q);
+  const placements = await cachedPlacements();
   return {
     options,
     filters,
     ...overview(rows, unevaluableRows, filters.comps, grain),
     periodsByGrain: { month: stageTrend(rows, "month"), week: stageTrend(rows, "week") },
     ...stages(rows, filters.comps, filters.modes),
+    pipeline: pipeline(rows, placements.rows, filters.comps, options.maxDay),
+    tiers: { ...tiers(rows, filters.comps), levelOrder: [...LEVEL_ORDER], verdictOrder: [...VERDICT_ORDER], underConsideration: [...UNDER_CONSIDERATION] },
   };
 }
 
@@ -193,7 +197,7 @@ async function dashboardView(tab: DashTab, q: FilterQuery) {
   const out: Record<string, unknown> = {
     tab,
     latest: { run, competencies: info.competencies, eventStatus: info.eventStatus, issues: info.issues, placements: info.placements },
-    overview: overviewView(all, fq, "month"),
+    overview: await overviewView(all, fq, "month"),
   };
   if (tab === "splits" || tab === "yog" || tab === "competency") out.splits = splitsView(all, fq, "month");
   if (tab === "competency") out.failures = failuresView(all, fq);
@@ -271,7 +275,7 @@ export const api = new Elysia({ prefix: "/api" })
     async ({ query, status }) => {
       const run = await cachedLatestRun();
       if (!run) return status(404, { error: "No metrics run yet." });
-      return { runId: run.runId, ...overviewView(await cachedRows(run.runId), query, query.grain ?? "month") };
+      return { runId: run.runId, ...(await overviewView(await cachedRows(run.runId), query, query.grain ?? "month")) };
     },
     { query: filterQuery }
   )

@@ -17,7 +17,7 @@ import { CompetencyView, HealthView, OutcomesView, OverviewView, ReattemptsView,
 const STORE = "lo-dashboard"; // tab + applied filters for this browser tab (survives a reload)
 const MAX_CACHED = 40;
 // The Period & mode split tab doesn't use the global filters.
-const filtersFor = (tab: Tab, f: FilterQuery) => (tab === "splits" ? {} : f);
+const filtersFor = (tab: Tab, f: FilterQuery) => (tab === "splits" || tab === "overview" ? {} : f);
 
 /**
  * The dashboard runs in the browser: switching tabs and applying filters fetch one bundle from
@@ -105,7 +105,7 @@ export function DashboardApp({ initial, user }: { initial: Dashboard; user: stri
 
   // A tab whose data hasn't arrived yet shows a placeholder; a filter change keeps the old numbers, dimmed.
   const waitingForTab = shown.tab !== tab;
-  const showBar = tab !== "splits";
+  const showBar = tab !== "splits" && tab !== "overview";
 
   return (
     <SidebarProvider>
