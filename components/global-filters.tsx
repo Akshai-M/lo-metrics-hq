@@ -11,7 +11,6 @@ import { Button } from "@/components/ui/button";
 import { Calendar } from "@/components/ui/calendar";
 import { Label } from "@/components/ui/label";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
@@ -22,10 +21,6 @@ const ATTEMPTS = [
   { value: "all", label: "All" },
   { value: "first", label: "First attempt" },
   { value: "re", label: "Reattempt" },
-];
-const PROGRAMS = [
-  { value: "YFT", label: "YFT (competency assessments)" },
-  { value: "IRP", label: "IRP (internships) · coming soon" },
 ];
 
 const day = (d: Date) => format(d, "yyyy-MM-dd");
@@ -106,21 +101,6 @@ export function GlobalFilters({
   // Rendered once inline (large screens) and once in the sheet (small screens); p keeps ids unique.
   const controls = (p: string) => (
     <>
-      <Field label="Program">
-        <Select value="YFT" items={PROGRAMS}>
-          <SelectTrigger className="w-full bg-card lg:w-auto lg:min-w-36">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent alignItemWithTrigger={false} align="start" className="w-auto min-w-(--anchor-width) max-w-[calc(100vw-2rem)]">
-            {PROGRAMS.map((p) => (
-              <SelectItem key={p.value} value={p.value} disabled={p.value === "IRP"}>
-                {p.label}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      </Field>
-
       <MultiSelect
         label="Competency"
         allLabel="All competencies"

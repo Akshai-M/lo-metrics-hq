@@ -5,7 +5,7 @@ import { TABS, type Tab } from "@/lib/tabs";
 import { cn } from "@/lib/utils";
 
 export const DESCRIPTIONS: Record<Tab, string> = {
-  overview: "Students attempting and clearing FT competency assessments. Every number follows the filter bar.",
+  overview: "Students attempting and clearing FT competency assessments, across all competencies, cohorts and dates.",
   splits: "Attempted and qualified students by competency, mode and period.",
   yog: "Clearance by mode, overall and by year of graduation.",
   competency: "Clearance and reattempts by competency and by assessment mode, and why attempts fail.",

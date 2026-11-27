@@ -103,6 +103,45 @@ export type Overview = {
   settings: { clearanceStage: Stage; poolEntryStage: Stage };
   assessment: StageClearance;
   funnel: Funnel & { byCompetency: (Funnel & { competency: string; assessment: StageClearance })[] };
+  pipeline: Pipeline;
+  tiers: Tiers;
+};
+export type Growth = {
+  value: number;
+  latestMonth: string | null; // YYYY-MM
+  previousMonth: string | null;
+  latest: number;
+  previous: number;
+  changePct: number | null;
+};
+export type PipelineCompetency = {
+  competency: string;
+  offlineCleared: number;
+  trSitting: number;
+  trCleared: number;
+  pool: number;
+  placed: number;
+  placedPct: number | null;
+};
+export type Pipeline = {
+  offlineCleared: Growth;
+  trCleared: Growth;
+  pool: Growth;
+  placed: Growth;
+  trSitting: number;
+  poolFromTrSitting: number | null;
+  placedFromPool: number | null;
+  byCompetency: PipelineCompetency[];
+  overlap: { offlineCleared: number; trSitting: number; trCleared: number; pool: number; placed: number };
+};
+export type Tiers = {
+  attempted: number;
+  levels: number[]; // aligned with levelOrder
+  verdicts: number[]; // aligned with verdictOrder
+  byCompetency: { competency: string; attempted: number; levels: number[]; verdicts: number[] }[];
+  levelOrder: string[];
+  verdictOrder: string[];
+  underConsideration: string[];
 };
 export type Stage = "offline" | "tr" | "both";
 export type StageClearance = { attempted: number; cleared: number; clearancePct: number | null };

@@ -1,14 +1,12 @@
 "use client";
 
 import { useState } from "react";
-import { Activity, AlertTriangle, BadgeCheck, Briefcase, Database, ExternalLink, Gavel, Repeat, RefreshCw, Timer, Users } from "lucide-react";
-import type { Dashboard, Overview } from "@/lib/api";
+import { Activity, AlertTriangle, BadgeCheck, Briefcase, Database, ExternalLink, Gavel, Timer, Users } from "lucide-react";
+import type { Dashboard } from "@/lib/api";
 import { COMPETENCIES } from "@/lib/shared";
 import type { Tab } from "@/lib/tabs";
-import { ClearanceTrendChart, CompetencyClearanceChart, type Point } from "@/components/charts";
-import { StageFunnel } from "@/components/funnel";
 import { ModeBenchmark, OverallModeCard, YogCohortSplits } from "@/components/mode-split";
-import { GrainTabs, PeriodModeCharts } from "@/components/period-charts";
+import { PeriodModeCharts } from "@/components/period-charts";
 import { BucketChart, FailureChart } from "@/components/detail-charts";
 import { RefreshButton } from "@/components/dashboard/refresh-button";
 import { StudentsTable } from "@/components/students-table";
@@ -17,10 +15,9 @@ import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Hero, Kpi, PendingKpi } from "./ui";
+import { Hero, Kpi } from "./ui";
+import { CompetencyPipeline, PipelineChart, PipelineHeadline, TiersCard } from "./pipeline";
 
-type Grain = "month" | "week";
-const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const STAGE_NAME = { offline: "Offline", tr: "TR", both: "Offline and TR" } as const;
 const SPLIT_SHORT: Record<string, string> = { C1: "DSA", C2: "FE", C4: "BE", C3: "SE", C7: "Gen AI" };
 
@@ -30,130 +27,21 @@ const fmtWhen = (iso: string) =>
 const fmtDay = (d: string | null) =>
   d ? new Date(`${d}T00:00:00Z`).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" }) : "n/a";
 
-function toPoint(p: Overview["periods"][number]): Point {
-  if (p.grain === "month") {
-    const [y, m] = p.period.split("-");
-    const name = MONTHS[Number(m) - 1];
-    return { label: name, full: `${name} ${y}`, attempted: p.attempted, cleared: p.cleared, pct: p.clearancePct };
-  }
-  // Week = 7-day range inside a month (1-7, 8-14, 15-21, 22-28, 29-end), keyed by its first day.
-  const [y, m, d] = p.periodStart.split("-").map(Number);
-  const end = d === 29 ? new Date(Date.UTC(y, m, 0)).getUTCDate() : d + 6;
-  const name = MONTHS[m - 1];
-  return { label: `${name} ${d}`, full: `${name} ${d}-${end}, ${y}`, attempted: p.attempted, cleared: p.cleared, pct: p.clearancePct };
-}
-
 export function OverviewView({ d, onTab }: { d: Dashboard; onTab: (t: Tab) => void }) {
-  const [grain, setGrain] = useState<Grain>("month");
   const ov = d.overview;
   const f = ov.filters;
-  const outcomes = d.outcomes;
-  const points = ov.periodsByGrain[grain].map(toPoint);
-  const compName = f.comps.length === ov.options.competencies.length ? "All competencies" : f.comps.join(", ");
-  const scopeName = `${compName} · ${f.modes.join(" + ")}`;
-  const r = ov.reattempts;
-  const num = (v: number | null) => (v === null ? "n/a" : v.toFixed(2));
-  const stage = STAGE_NAME[ov.settings.clearanceStage];
-  const trendScope = `${compName} · ${stage} stage`;
-  const range = points.length ? `${points[0].full} — ${points[points.length - 1].full} · ${trendScope}` : trendScope;
-  const a = ov.assessment;
 
   return (
     <>
       <Hero
         tab="overview"
         runAt={d.latest.run.runAt}
-        controls={
-          <>
-            <RefreshButton />
-            <GrainTabs value={grain} onChange={setGrain} />
-          </>
-        }
+        controls={<RefreshButton />}
       />
-      <Card className="gap-0 overflow-hidden rounded-lg py-0">
-        <div className="grid grid-cols-1 gap-px bg-border sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
-          <Kpi
-            label="Students attempted"
-            value={ov.attemptedStudents.toLocaleString()}
-            sub={`${scopeName} · unevaluable ${f.unevaluable ? "included" : "excluded"}`}
-            icon={Users}
-            chip="green"
-          />
-          <Kpi
-            label="Assessment clearance %"
-            value={fmtPct(a.clearancePct)}
-            sub={
-              a.attempted
-                ? `Stage: ${stage} cleared · ${a.cleared.toLocaleString()} / ${a.attempted.toLocaleString()} students who attempted ${stage}`
-                : `Stage: ${stage} cleared · ${stage} is not in the Mode filter`
-            }
-            icon={BadgeCheck}
-            chip="green"
-          />
-          <Kpi
-            label="Reattempt %"
-            value={fmtPct(ov.reattemptPct)}
-            sub={`${ov.reattemptedStudents.toLocaleString()} students with 2+ attempts in a competency ÷ students attempted`}
-            icon={Repeat}
-            chip="blue"
-          />
-          <Kpi
-            label="Median re-attempts to clear"
-            value={r.toClear.median === null ? "n/a" : String(r.toClear.median)}
-            sub={`Mean ${num(r.toClear.mean)} (${r.toClear.pairs.toLocaleString()} cleared pairs) · attempts so far: median ${r.soFar.median ?? "n/a"}, mean ${num(r.soFar.mean)}`}
-            icon={RefreshCw}
-            chip="blue"
-          />
-          <Kpi
-            label="Unevaluable"
-            value={ov.unevaluable.rows.toLocaleString()}
-            sub={`attempts from ${ov.unevaluable.students.toLocaleString()} students · ${f.unevaluable ? "included as not cleared" : "left out of every denominator"}`}
-            icon={AlertTriangle}
-            chip="amber"
-          />
-        </div>
-        <div className="grid grid-cols-1 gap-px border-t bg-border sm:grid-cols-3 xl:grid-cols-6">
-          {outcomes ? (
-            <Kpi
-              label="Pool → Placed %"
-              value={fmtPct(outcomes.placement.poolToPlacedPct)}
-              sub={`${outcomes.placement.placed.toLocaleString()} of ${outcomes.placement.pool.toLocaleString()} assessed-pool students placed after pool entry`}
-              icon={Briefcase}
-              chip="green"
-            />
-          ) : (
-            <PendingKpi label="Pool → Placed %" needs="Needs placement data" />
-          )}
-          <PendingKpi label="FT (active)" needs="Needs placement data" />
-          <PendingKpi label="Intern" needs="Needs placement data" />
-          <PendingKpi label="Intern (active)" needs="Needs placement data" />
-          <PendingKpi label="Internship clearance %" needs="Needs IRP data" />
-          <PendingKpi label="NPS" needs="Needs survey data" />
-        </div>
-      </Card>
-
-      <StageFunnel funnel={ov.funnel} poolEntry={ov.settings.poolEntryStage} online={f.online} index="01" />
-
-      <ClearanceTrendChart
-        key={grain}
-        points={points}
-        index="02"
-        title={`${grain === "month" ? "Monthly" : "Weekly"} ${stage} clearance`}
-        range={range}
-        onInspect={() => onTab("splits")}
-      />
-
-      <CompetencyClearanceChart
-        index="03"
-        stage={`${stage} cleared`}
-        bars={ov.funnel.byCompetency.map((c) => ({
-          competency: c.competency,
-          name: COMPETENCIES[c.competency],
-          attempted: c.assessment.attempted,
-          cleared: c.assessment.cleared,
-          pct: c.assessment.clearancePct,
-        }))}
-      />
+      <PipelineHeadline ov={ov} online={f.online} />
+      <PipelineChart ov={ov} />
+      <CompetencyPipeline ov={ov} />
+      <TiersCard t={ov.tiers} />
     </>
   );
 }
