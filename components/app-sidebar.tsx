@@ -74,7 +74,7 @@ export function AppSidebar({
                       onFocus={() => onPrefetch?.(t.key)}
                     >
                       <Icon />
-                      <span>{t.label}</span>
+                      <span className="truncate group-data-[collapsible=icon]:hidden">{t.label}</span>
                     </SidebarMenuButton>
                   </SidebarMenuItem>
                 );
@@ -94,7 +94,7 @@ export function AppSidebar({
           <SidebarMenuItem>
             <SidebarMenuButton tooltip="Sign out" onClick={signOut}>
               <LogOut />
-              <span>Sign out</span>
+              <span className="truncate group-data-[collapsible=icon]:hidden">Sign out</span>
             </SidebarMenuButton>
           </SidebarMenuItem>
         </SidebarMenu>

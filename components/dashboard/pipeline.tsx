@@ -129,6 +129,7 @@ const TIER_CHIP: Record<string, string> = {
   Reject: "bg-destructive/10 text-destructive",
 };
 const SHORT_LABEL: Record<string, string> = { "Below L2": "< L2", "Below L1": "< L1" };
+const COMP_COLORS = ["var(--chart-1)", "var(--chart-2)", "var(--chart-3)", "var(--chart-4)", "var(--chart-5)"];
 
 /**
  * Levels and verdict bands for the latest TR interview of each student. Columns with no students
@@ -151,6 +152,14 @@ export function TiersCard({ t }: { t: Overview["tiers"] }) {
       </CardHeader>
       {sections.map((sec) => {
         const cols = sec.order.map((label, i) => ({ label, i })).filter((c) => sec.total[c.i] > 0);
+        const series = t.byCompetency.filter((r) => r.attempted > 0);
+        const data = cols.map((c) => ({
+          label: SHORT_LABEL[c.label] ?? c.label,
+          ...Object.fromEntries(series.map((r) => [r.competency, sec.pick(r)[c.i]])),
+        }));
+        const cfg = Object.fromEntries(
+          series.map((r, i) => [r.competency, { label: SHORT[r.competency] ?? r.competency, color: COMP_COLORS[i % COMP_COLORS.length] }])
+        ) as ChartConfig;
         return (
           <CardContent key={sec.title} className="flex flex-col gap-4 border-b px-4 py-5 last:border-b-0 sm:px-5">
             <div className="flex flex-wrap items-center gap-2">
@@ -169,6 +178,18 @@ export function TiersCard({ t }: { t: Overview["tiers"] }) {
                 </div>
               ))}
             </div>
+            <ChartContainer config={cfg} className="aspect-auto h-[240px] w-full">
+              <BarChart data={data} margin={{ top: 8, right: 4, left: 0, bottom: 0 }} barCategoryGap="25%">
+                <CartesianGrid vertical={false} strokeDasharray="3 4" stroke="var(--grid)" />
+                <XAxis dataKey="label" tickLine={false} axisLine={false} tickMargin={8} interval={0} />
+                <YAxis tickLine={false} axisLine={false} width={36} allowDecimals={false} />
+                <ChartTooltip cursor={{ fill: "var(--muted)", opacity: 0.6 }} content={<ChartTooltipContent />} />
+                <ChartLegend content={<ChartLegendContent />} />
+                {series.map((r) => (
+                  <Bar key={r.competency} dataKey={r.competency} fill={`var(--color-${r.competency})`} radius={[3, 3, 0, 0]} />
+                ))}
+              </BarChart>
+            </ChartContainer>
             <div className="-mx-4 overflow-x-auto sm:-mx-5">
               <Table className="min-w-max">
                 <TableHeader>
